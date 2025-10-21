@@ -1,7 +1,0 @@
-../Application/Drivers/Src/adt7420.c:7:26:rd_u8	24	static
-../Application/Drivers/Src/adt7420.c:12:19:ADT7420_ReadID	0	static
-../Application/Drivers/Src/adt7420.c:15:19:ADT7420_ReadConfig	0	static
-../Application/Drivers/Src/adt7420.c:18:19:ADT7420_Set16Bit	40	static
-../Application/Drivers/Src/adt7420.c:28:19:ADT7420_ReadRaw	32	static
-../Application/Drivers/Src/adt7420.c:38:19:ADT7420_ReadCelsius	24	static
-../Application/Drivers/Src/adt7420.c:50:19:ADT7420_Init	16	static

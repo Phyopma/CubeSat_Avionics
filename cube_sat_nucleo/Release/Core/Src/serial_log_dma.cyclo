@@ -1,3 +1,0 @@
-../Core/Src/serial_log_dma.c:15:6:serial_log_init	1
-../Core/Src/serial_log_dma.c:17:6:log_printf_dma	6
-../Core/Src/serial_log_dma.c:30:6:HAL_UART_TxCpltCallback	2
