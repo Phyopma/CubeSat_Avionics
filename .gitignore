@@ -52,7 +52,26 @@ Mkfile.old
 dkms.conf
 
 
+# STM32CubeIDE/STM32CubeMX specific
+.settings/
+.cproject
+.project
+.mxproject
+*.launch
+*.log
+
+# IDE metadata and user settings
 .metadata
+stm32cubemx/
+*.backup
 
 # debug information files
 *.dwo
+
+
+# CubeIDE/Build residues
+Release/
+Debug/
+build/
+*.bin
+*.cfg
