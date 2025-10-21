@@ -1,2 +1,0 @@
-../Core/Src/serial_printf.c:11:5:__io_putchar	24	static
-../Core/Src/serial_printf.c:17:5:_write	24	static

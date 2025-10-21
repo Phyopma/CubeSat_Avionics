@@ -6,19 +6,19 @@
  */
 
 
-#include<serial_printf.h>
-
-int __io_putchar(int ch) {
-    uint8_t c = (uint8_t)ch;
-    HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
-    return ch;
-}
-
-int _write(int file, char *ptr, int len) {
-	if (HAL_UART_Transmit(&huart2, (uint8_t *)ptr, (uint16_t)len, HAL_MAX_DELAY) == HAL_OK)
-	{
-		return len;
-	}
-	return 0;
-
-}
+//#include<serial_printf.h>
+//
+//int __io_putchar(int ch) {
+//    uint8_t c = (uint8_t)ch;
+//    HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
+//    return ch;
+//}
+//
+//int _write(int file, char *ptr, int len) {
+//	if (HAL_UART_Transmit(&huart2, (uint8_t *)ptr, (uint16_t)len, HAL_MAX_DELAY) == HAL_OK)
+//	{
+//		return len;
+//	}
+//	return 0;
+//
+//}

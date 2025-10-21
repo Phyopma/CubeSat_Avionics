@@ -1,0 +1,7 @@
+../Application/Drivers/Src/adt7420.c:7:26:rd_u8	1
+../Application/Drivers/Src/adt7420.c:12:19:ADT7420_ReadID	1
+../Application/Drivers/Src/adt7420.c:15:19:ADT7420_ReadConfig	1
+../Application/Drivers/Src/adt7420.c:18:19:ADT7420_Set16Bit	4
+../Application/Drivers/Src/adt7420.c:28:19:ADT7420_ReadRaw	2
+../Application/Drivers/Src/adt7420.c:38:19:ADT7420_ReadCelsius	4
+../Application/Drivers/Src/adt7420.c:50:19:ADT7420_Init	3
