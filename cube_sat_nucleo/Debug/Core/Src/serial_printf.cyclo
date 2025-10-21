@@ -1,0 +1,2 @@
+../Core/Src/serial_printf.c:11:5:__io_putchar	1
+../Core/Src/serial_printf.c:17:5:_write	2
