@@ -51,13 +51,18 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-
+# IDE metadata and user settings
 .metadata
+stm32cubemx/
+*.backup
 
 # debug information files
 *.dwo
 
 
-# build residues
+# CubeIDE/Build residues
 Release/
 Debug/
+build/
+*.bin
+*.cfg
