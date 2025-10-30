@@ -75,3 +75,6 @@ Debug/
 build/
 *.bin
 *.cfg
+
+
+.DS_Store
