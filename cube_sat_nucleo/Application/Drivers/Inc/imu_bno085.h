@@ -17,28 +17,29 @@ extern SPI_HandleTypeDef hspi3;
 extern UART_HandleTypeDef huart2; // For logging
 
 // GPIO mapping from CubeMX
-#define IMU_CS_GPIO_Port   GPIOB
-#define IMU_CS_Pin         GPIO_PIN_2
-#define IMU_RST_GPIO_Port  GPIOB
-#define IMU_RST_Pin        GPIO_PIN_5
-#define IMU_INT_GPIO_Port  GPIOA
-#define IMU_INT_Pin        GPIO_PIN_10
+#define IMU_CS_GPIO_Port GPIOB
+#define IMU_CS_Pin GPIO_PIN_2
+#define IMU_RST_GPIO_Port GPIOB
+#define IMU_RST_Pin GPIO_PIN_5
+#define IMU_INT_GPIO_Port GPIOA
+#define IMU_INT_Pin GPIO_PIN_10
 
 // SHTP constants
 #define SHTP_REASSEMBLY_BUF_SIZE 1024
-#define SHTP_NUM_CHANNELS      6
-#define SHTP_CHANNEL_CONTROL   0
-#define SHTP_CHANNEL_REPORTS   2
+#define SHTP_NUM_CHANNELS 6
+#define SHTP_CHANNEL_CONTROL 0
+#define SHTP_CHANNEL_REPORTS 2
 
 // SH-2 report IDs
 #define SHTP_REPORT_SET_FEATURE_COMMAND 0xFD
-#define SHTP_REPORT_BASE_TIMESTAMP      0xFB
-#define SHTP_REPORT_ROTATION_VECTOR     0x05
+#define SHTP_REPORT_BASE_TIMESTAMP 0xFB
+#define SHTP_REPORT_ROTATION_VECTOR 0x05
 
 /**
  * @brief Quaternion data structure
  */
-typedef struct {
+typedef struct
+{
     float i, j, k, real;
     uint32_t timestamp_us;
     bool valid;
@@ -47,7 +48,8 @@ typedef struct {
 /**
  * @brief Main BNO085 device structure
  */
-typedef struct {
+typedef struct
+{
     // tx/rx sequence numbers per channel
     uint8_t tx_seq[SHTP_NUM_CHANNELS];
 
@@ -55,27 +57,40 @@ typedef struct {
     uint8_t rx_buf[SHTP_REASSEMBLY_BUF_SIZE];
     uint8_t tx_buf[SHTP_REASSEMBLY_BUF_SIZE];
 
-    // *** ADD THIS LINE ***
     uint8_t dummy_tx_buf[SHTP_REASSEMBLY_BUF_SIZE]; // Buffer of 0xFF for SPI reads
 
     // Last received quaternion
     bno085_quat_t quat;
+    struct
+    {
+        float x, y, z; // Angular velocity (rad/s)
+        uint32_t timestamp_us;
+        bool valid;
+    } gyro;
 } bno085_t;
 
+typedef struct
+{
+    bno085_quat_t quaternion;  //  quaternion structure
+    float euler_angles[3];     // [roll, pitch, yaw] in radians
+    float angular_velocity[3]; // [wx, wy, wz] body-frame angular velocity (rad/s)
+    uint32_t timestamp_ms;     // HAL_GetTick() timestamp
+    bool valid;                // Overall data validity
+} BNO085_Data;
 
 /**
  * @brief Performs a hardware reset and initializes the BNO085.
  * @param dev Pointer to the device structure.
  * @return true on success, false on failure.
  */
-bool BNO085_Begin(bno085_t* dev);
+bool BNO085_Begin(bno085_t *dev);
 
 /**
  * @brief Must be called in the main loop to process incoming data.
  * @param dev Pointer to the device structure.
  * @return true if a report was processed, false otherwise.
  */
-bool BNO085_Service(bno085_t* dev);
+bool BNO085_Service(bno085_t *dev);
 
 /**
  * @brief Gets the latest valid quaternion reading.
@@ -83,7 +98,7 @@ bool BNO085_Service(bno085_t* dev);
  * @param out Pointer to store the output quaternion.
  * @return true if a new, valid reading was returned.
  */
-bool BNO085_GetQuaternion(bno085_t* dev, bno085_quat_t* out);
+bool BNO085_GetQuaternion(bno085_t *dev, bno085_quat_t *out);
 
 /**
  * @brief Performs a hardware reset of the BNO085.
@@ -96,11 +111,16 @@ void BNO085_Reset(void);
  * @param interval_us Report interval in microseconds.
  * @return true on successful command send, false on SPI fail.
  */
-bool BNO085_EnableRotationVector(bno085_t* dev, uint32_t interval_us);
+bool BNO085_EnableRotationVector(bno085_t *dev, uint32_t interval_us);
 
 /**
  * @brief Helper function for printf-style logging over UART
  */
-void BNO085_Log(const char* fmt, ...);
+void BNO085_Log(const char *fmt, ...);
+
+bool BNO085_GetData(bno085_t *dev, BNO085_Data *data);
+void BNO085_QuaternionToEuler(const bno085_quat_t *quat, float *roll, float *pitch, float *yaw);
+
+bool BNO085_EnableGyroscope(bno085_t *dev, uint32_t interval_us);
 
 #endif /* APPLICATION_DRIVERS_INC_IMU_BNO085_H_ */
