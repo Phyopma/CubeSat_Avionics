@@ -49,7 +49,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+bno085_t my_imu;
+bno085_quat_t my_quat;
+char log_buf[128];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,8 +100,7 @@ int main(void)
   MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
   serial_log_init(&huart2);
-  const char hello[] = "UART DMA logger online\r\n";
-  HAL_UART_Transmit(&huart2, (uint8_t*)hello, sizeof(hello)-1, 100);
+  log_printf_dma("UART DMA logger online\r\n");
 
   // ADT7420 begin
 //  log_printf_dma("ADT7420 bring-up\n");
@@ -122,14 +123,17 @@ int main(void)
   // ADT7420 end
 
   // IMU Begin
-  bno085_t g_imu;
-  if (!BNO085_Begin(&g_imu)) {
-	  log_printf_dma("BNO085 init failed\r\n");
-  } else {
-	  log_printf_dma("BNO085 init OK\r\n");
-  }
 
-  uint32_t last_print = HAL_GetTick();
+  	BNO085_Log("--- CubeSat Avionics BNO085 Test ---\n");
+
+    if (BNO085_Begin(&my_imu)) {
+      BNO085_Log("BNO085 initialization successful.\n");
+    } else {
+      BNO085_Log("BNO085 initialization FAILED. Freezing.\n");
+      while (1) {
+        HAL_Delay(100);
+      }
+    }
 
   // IMU End
 
@@ -149,25 +153,25 @@ int main(void)
 //	HAL_Delay(100);
 //	ADT7420 end
 
-//	IMU begin
-	(void)BNO085_Service(&g_imu);
-
-	bno085_quat_t q;
-	if (BNO085_GetQuaternion(&g_imu, &q)) {
-		// Print on arrival as well
-		log_printf_dma("Q: %.6f, %.6f, %.6f, %.6f ts=%lu\r\n",
-			   q.i, q.j, q.k, q.real, (unsigned long)q.timestamp_us);
-	}
-
-	if ((HAL_GetTick() - last_print) >= 100) {
-		last_print += 100;
-		// Optional periodic print if no new data
-	}
-
-//	IMU end
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	BNO085_Service(&my_imu);
+
+	    // Check if the service call produced a new, valid quaternion
+	    if (BNO085_GetQuaternion(&my_imu, &my_quat)) {
+
+	      // Format the quaternion data and log it
+	      sprintf(log_buf, "Quat: i=%.3f, j=%.3f, k=%.3f, real=%.3f\n",
+	              my_quat.i, my_quat.j, my_quat.k, my_quat.real);
+
+	      BNO085_Log(log_buf);
+
+	    }
+
+	    // Add a small delay. In a real system, this would be handled
+	    // by an RTOS task or scheduler.
+	    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
@@ -205,9 +209,9 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV2;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
   {
