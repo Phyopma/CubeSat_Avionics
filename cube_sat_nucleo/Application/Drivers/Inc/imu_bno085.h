@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+
 // CubeMX instances
 extern SPI_HandleTypeDef hspi3;
 extern UART_HandleTypeDef huart2; // For logging
@@ -27,13 +28,18 @@ extern UART_HandleTypeDef huart2; // For logging
 // SHTP constants
 #define SHTP_REASSEMBLY_BUF_SIZE 1024
 #define SHTP_NUM_CHANNELS      6
-#define SHTP_CHANNEL_CONTROL   0
-#define SHTP_CHANNEL_REPORTS   2
+#define SHTP_CHANNEL_COMMAND   0
+#define SHTP_CHANNEL_EXECUTABLE 1
+#define SHTP_CHANNEL_CONTROL   2
+#define SHTP_CHANNEL_REPORTS   3
+#define SHTP_CHANNEL_WAKE_REPORTS 4
+#define SHTP_CHANNEL_GYRO_ROTATION_VECTOR 5
 
 // SH-2 report IDs
 #define SHTP_REPORT_SET_FEATURE_COMMAND 0xFD
 #define SHTP_REPORT_BASE_TIMESTAMP      0xFB
 #define SHTP_REPORT_ROTATION_VECTOR     0x05
+#define SHTP_REPORT_PRODUCT_ID          0xF1
 
 /**
  * @brief Quaternion data structure
@@ -55,9 +61,6 @@ typedef struct {
     uint8_t rx_buf[SHTP_REASSEMBLY_BUF_SIZE];
     uint8_t tx_buf[SHTP_REASSEMBLY_BUF_SIZE];
 
-    // *** ADD THIS LINE ***
-    uint8_t dummy_tx_buf[SHTP_REASSEMBLY_BUF_SIZE]; // Buffer of 0xFF for SPI reads
-
     // Last received quaternion
     bno085_quat_t quat;
 } bno085_t;
@@ -75,7 +78,7 @@ bool BNO085_Begin(bno085_t* dev);
  * @param dev Pointer to the device structure.
  * @return true if a report was processed, false otherwise.
  */
-bool BNO085_Service(bno085_t* dev);
+bool BNO085_Service(bno085_t* dev, uint8_t* channel_read); // change docs later
 
 /**
  * @brief Gets the latest valid quaternion reading.

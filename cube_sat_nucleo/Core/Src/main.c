@@ -52,6 +52,7 @@
 bno085_t my_imu;
 bno085_quat_t my_quat;
 char log_buf[128];
+uint32_t last_print_time = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -130,9 +131,7 @@ int main(void)
       BNO085_Log("BNO085 initialization successful.\n");
     } else {
       BNO085_Log("BNO085 initialization FAILED. Freezing.\n");
-      while (1) {
-        HAL_Delay(100);
-      }
+
     }
 
   // IMU End
@@ -156,16 +155,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	BNO085_Service(&my_imu);
+	  // Get the current time at the start of the loop
+	  uint32_t current_time = HAL_GetTick();
+	  BNO085_Service(&my_imu, NULL);
 
 	    // Check if the service call produced a new, valid quaternion
 	    if (BNO085_GetQuaternion(&my_imu, &my_quat)) {
 
-	      // Format the quaternion data and log it
-	      sprintf(log_buf, "Quat: i=%.3f, j=%.3f, k=%.3f, real=%.3f\n",
-	              my_quat.i, my_quat.j, my_quat.k, my_quat.real);
+	    	if (current_time - last_print_time >= 300)
+	    	    {
+	    	      last_print_time = current_time; // Update the last print time
 
-	      BNO085_Log(log_buf);
+	    	      // Format the *most recent* quaternion data and log it.
+	    	      // The \r\n ensures it prints on a new line.
+	    	      // The % 8.3f formats the numbers to align in columns.
+	    	      sprintf(log_buf, "\r\nQuat: i=% 8.3f, j=% 8.3f, k=% 8.3f, real=% 8.3f",
+	    	              my_quat.i, my_quat.j, my_quat.k, my_quat.real);
+
+	    	      BNO085_Log(log_buf);
+	    	    }
 
 	    }
 
