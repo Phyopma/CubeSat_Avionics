@@ -11,6 +11,16 @@
 // 100ms timeout for blocking SPI
 #define SPI_TIMEOUT 100
 
+// --- Scaling Factors (from SH-2 Reference Manual Section 6.5) ---
+// Rotation Vector (Q14)
+#define SCALE_Q14 (1.0f / 16384.0f)
+// Linear Acceleration (Q8) -> m/s^2
+#define SCALE_Q8  (1.0f / 256.0f)
+// Gyroscope (Q9) -> rad/s
+#define SCALE_Q9  (1.0f / 512.0f)
+// Magnetic Field (Q4) -> uTesla
+#define SCALE_Q4  (1.0f / 16.0f)
+
 // --- Local SPI Helper Functions ---
 
 static void cs_select(void) {
@@ -62,7 +72,7 @@ static bool read_packet(bno085_t* dev, uint8_t* channel, uint16_t* payload_len) 
 
         if (payload_in_fragment > 0) {
             if (total_payload_received + payload_in_fragment > SHTP_REASSEMBLY_BUF_SIZE) {
-                // Payload overflow, we must discard the rest of this fragment
+                // Overflow protection
                 uint16_t bytes_to_discard = payload_in_fragment;
                 uint8_t sink[32];
                 while (bytes_to_discard > 0) {
@@ -74,7 +84,6 @@ static bool read_packet(bno085_t* dev, uint8_t* channel, uint16_t* payload_len) 
                     bytes_to_discard -= chunk;
                 }
             } else {
-                // Read the payload that fits
                 if (spi_rx(&dev->rx_buf[total_payload_received], payload_in_fragment) != HAL_OK) {
                     cs_deselect();
                     return false;
@@ -110,47 +119,138 @@ static bool write_packet(bno085_t* dev, uint8_t channel, const uint8_t* payload,
     return (st == HAL_OK);
 }
 
+/**
+ * @brief Generic Helper to send "Set Feature" commands
+ * @note  ALWAYS writes to SHTP_CHANNEL_CONTROL (2)
+ */
+static bool BNO085_SetFeature(bno085_t* dev, uint8_t report_id, uint32_t interval_us) {
+    uint8_t payload[17];
+    payload[0] = SHTP_REPORT_SET_FEATURE_COMMAND; // 0xFD
+    payload[1] = report_id;                       // e.g., 0x05, 0x08, 0x02...
+    payload[2] = 0x00; // Feature flags
+    payload[3] = 0x00; // Change Sensitivity (LSB)
+    payload[4] = 0x00; // Change Sensitivity (MSB)
+    payload[5] = (uint8_t)(interval_us & 0xFF);
+    payload[6] = (uint8_t)((interval_us >> 8) & 0xFF);
+    payload[7] = (uint8_t)((interval_us >> 16) & 0xFF);
+    payload[8] = (uint8_t)((interval_us >> 24) & 0xFF);
+    memset(&payload[9], 0, 8);
+
+    // Enforce SHTP_CHANNEL_CONTROL (Channel 2)
+    return write_packet(dev, SHTP_CHANNEL_CONTROL, payload, sizeof(payload));
+}
+
 // --- Report Parsing ---
 
 static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n) {
     uint16_t idx = 0;
     while (idx < n) {
         uint8_t report_id = p[idx];
-
         uint16_t report_len = 0;
-        if (report_id == SHTP_REPORT_ROTATION_VECTOR) {
-            report_len = 14;
-        } else if (report_id == SHTP_REPORT_SET_FEATURE_COMMAND) {
-            report_len = 17;
-        } else if (report_id == SHTP_REPORT_BASE_TIMESTAMP) {
-            report_len = 5;
-        } else if (report_id == SHTP_REPORT_PRODUCT_ID) {
-            report_len = 16;
+
+        // Determine report length based on ID
+        switch (report_id) {
+            case SHTP_REPORT_ROTATION_VECTOR:
+                report_len = 14; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(10)
+                break;
+            case SHTP_REPORT_GAME_ROTATION_VECTOR:
+                report_len = 12; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(8)
+                break;
+            case SHTP_REPORT_LINEAR_ACCELERATION:
+            case SHTP_REPORT_GYROSCOPE:
+            case SHTP_REPORT_MAGNETIC_FIELD:
+                report_len = 10; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(6)
+                break;
+
+            // *** THE MISSING FIX IS HERE ***
+            case SHTP_REPORT_TIMESTAMP_REBASE:
+                report_len = 5; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Time(1)
+                break;
+
+            case SHTP_REPORT_BASE_TIMESTAMP:
+                report_len = 5;
+                break;
+            case SHTP_REPORT_SET_FEATURE_COMMAND:
+                report_len = 17;
+                break;
+            case SHTP_REPORT_PRODUCT_ID:
+                report_len = 16;
+                break;
+            default:
+                report_len = 0; // Still unknown
+                break;
         }
 
+        // Safety check: Ensure we don't read past the buffer
         if (report_len > 0 && (idx + report_len <= n)) {
-            if (report_id == SHTP_REPORT_ROTATION_VECTOR) {
-                int16_t qi = (int16_t)((p[idx+5]<<8) | p[idx+4]);
-                int16_t qj = (int16_t)((p[idx+7]<<8) | p[idx+6]);
-                int16_t qk = (int16_t)((p[idx+9]<<8) | p[idx+8]);
-                int16_t qr = (int16_t)((p[idx+11]<<8) | p[idx+10]);
 
-                const float scale = 1.0f / 16384.0f; // Q14 format
-                dev->quat.i = (float)qi * scale;
-                dev->quat.j = (float)qj * scale;
-                dev->quat.k = (float)qk * scale;
-                dev->quat.real = (float)qr * scale;
-                dev->quat.timestamp_us = 0;
+            // If it's a data report, parse the payload
+            // (Skip ID, Seq, Status, Delay -> start at idx+4)
+            uint16_t data_idx = idx + 4;
+
+            if (report_id == SHTP_REPORT_ROTATION_VECTOR) {
+                int16_t qi = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t qj = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t qk = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+                int16_t qr = (int16_t)((p[data_idx+7]<<8) | p[data_idx+6]);
+                int16_t acc= (int16_t)((p[data_idx+9]<<8) | p[data_idx+8]);
+
+                dev->quat.i = (float)qi * SCALE_Q14;
+                dev->quat.j = (float)qj * SCALE_Q14;
+                dev->quat.k = (float)qk * SCALE_Q14;
+                dev->quat.real = (float)qr * SCALE_Q14;
+                dev->quat.accuracy_rad = (float)acc * SCALE_Q14;
                 dev->quat.valid = true;
             }
+            else if (report_id == SHTP_REPORT_GAME_ROTATION_VECTOR) {
+                int16_t qi = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t qj = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t qk = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+                int16_t qr = (int16_t)((p[data_idx+7]<<8) | p[data_idx+6]);
+
+                dev->game_quat.i = (float)qi * SCALE_Q14;
+                dev->game_quat.j = (float)qj * SCALE_Q14;
+                dev->game_quat.k = (float)qk * SCALE_Q14;
+                dev->game_quat.real = (float)qr * SCALE_Q14;
+                dev->game_quat.valid = true;
+            }
+            else if (report_id == SHTP_REPORT_LINEAR_ACCELERATION) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+
+                dev->lin_accel.x = (float)x * SCALE_Q8;
+                dev->lin_accel.y = (float)y * SCALE_Q8;
+                dev->lin_accel.z = (float)z * SCALE_Q8;
+                dev->lin_accel.valid = true;
+            }
+            else if (report_id == SHTP_REPORT_GYROSCOPE) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+
+                dev->gyro.x = (float)x * SCALE_Q9;
+                dev->gyro.y = (float)y * SCALE_Q9;
+                dev->gyro.z = (float)z * SCALE_Q9;
+                dev->gyro.valid = true;
+            }
+            else if (report_id == SHTP_REPORT_MAGNETIC_FIELD) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+
+                dev->mag.x = (float)x * SCALE_Q4;
+                dev->mag.y = (float)y * SCALE_Q4;
+                dev->mag.z = (float)z * SCALE_Q4;
+                dev->mag.valid = true;
+            }
+
+            // Move to the next report in the buffer
             idx += report_len;
-
-        } else if (report_len == 0) {
-            // Ignoring unknown report ID
-            break;
-
-        } else {
-            // Truncated report
+        }
+        else {
+            // Unknown ID or truncated buffer.
+            // We MUST break to avoid infinite loops or reading garbage.
             break;
         }
     }
@@ -167,22 +267,16 @@ void BNO085_Reset(void) {
     HAL_Delay(50);
 }
 
-/**
- * @brief Helper function to wait for a command response
- * @return true on ACK, false on timeout
- */
 static bool BNO085_WaitForAck(bno085_t* dev) {
     uint32_t t0 = HAL_GetTick();
-    while ((HAL_GetTick() - t0) < 500) { // Increased timeout for ACK
+    while ((HAL_GetTick() - t0) < 500) {
         uint8_t ch;
         if (BNO085_Service(dev, &ch)) {
             if (ch == SHTP_CHANNEL_CONTROL) {
-                BNO085_Log("...Got ACK on channel 2.\n");
-                return true; // Received the "Command Response"
+                return true;
             }
         }
     }
-    BNO085_Log("...ACK timeout.\n");
     return false;
 }
 
@@ -190,62 +284,37 @@ bool BNO085_Begin(bno085_t* dev) {
     memset(dev, 0, sizeof(*dev));
     BNO085_Reset();
 
-    BNO085_Log("Waiting for BNO085 to boot (2000ms)...\n");
-
-    // Wait 2.0 seconds for the BNO085 to boot and send all its
-    // unsolicited advertisement packets.
+    BNO085_Log("Waiting for BNO085 to boot...\n");
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < 2000) {
         uint8_t ch;
-        (void)BNO085_Service(dev, &ch); // Call to read/discard
+        BNO085_Service(dev, &ch); // Flush advertisement packets
         HAL_Delay(1);
     }
 
-    // Send "Enable Rotation Vector"
-    BNO085_Log("Sending Enable Rotation Vector command...\n");
-    if (!BNO085_EnableRotationVector(dev, 10000)) {
-        BNO085_Log("Enable Rotation Vector write failed\n");
-        return false;
-    }
-    // Wait for ACK
-    if (!BNO085_WaitForAck(dev)) {
-        BNO085_Log("No ACK for Rotation Vector.\n");
-        return false;
-    }
+    // Enable Sensors
+    BNO085_Log("Enabling Rotation Vector...\n");
+    if (!BNO085_EnableRotationVector(dev, 10000)) return false;
+    if (!BNO085_WaitForAck(dev)) return false;
 
-    // Wait up to 500 ms for the first valid data report
-    BNO085_Log("Waiting for first quaternion...\n");
-    t0 = HAL_GetTick();
-    while ((HAL_GetTick() - t0) < 500) {
-        uint8_t ch;
-        if (BNO085_Service(dev, &ch)) {
-            if (dev->quat.valid) {
-                BNO085_Log("Got first valid quaternion!\n");
-                return true;
-            }
-        }
-    }
-
-    BNO085_Log("Init timeout, no valid quat received.\n");
-    return false;
+    return true;
 }
 
+// Wrappers for Enabling Sensors
 bool BNO085_EnableRotationVector(bno085_t* dev, uint32_t interval_us) {
-    uint8_t payload[17];
-    payload[0] = SHTP_REPORT_SET_FEATURE_COMMAND;
-    payload[1] = SHTP_REPORT_ROTATION_VECTOR;
-    payload[2] = 0x00; // Feature flags
-    payload[3] = 0x00; // Change Sensitivity (LSB)
-    payload[4] = 0x00; // Change Sensitivity (MSB)
-    payload[5] = (uint8_t)(interval_us & 0xFF);
-    payload[6] = (uint8_t)((interval_us >> 8) & 0xFF);
-    payload[7] = (uint8_t)((interval_us >> 16) & 0xFF);
-    payload[8] = (uint8_t)((interval_us >> 24) & 0xFF);
-    memset(&payload[9], 0, 8);
-
-    // *** THIS IS YOUR CONFIRMED WORKING CHANNEL ***
-    // Sending on Channel 2 (SHTP_CHANNEL_CONTROL)
-    return write_packet(dev, SHTP_CHANNEL_CONTROL, payload, sizeof(payload));
+    return BNO085_SetFeature(dev, SHTP_REPORT_ROTATION_VECTOR, interval_us);
+}
+bool BNO085_EnableGameRotationVector(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_GAME_ROTATION_VECTOR, interval_us);
+}
+bool BNO085_EnableLinearAccelerometer(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_LINEAR_ACCELERATION, interval_us);
+}
+bool BNO085_EnableGyroscope(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_GYROSCOPE, interval_us);
+}
+bool BNO085_EnableMagnetometer(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_MAGNETIC_FIELD, interval_us);
 }
 
 bool BNO085_Service(bno085_t* dev, uint8_t* channel_read) {
@@ -253,28 +322,55 @@ bool BNO085_Service(bno085_t* dev, uint8_t* channel_read) {
         return false;
     }
 
-    // INT pin is LOW, so we have data.
     uint8_t ch; uint16_t n;
     if (!read_packet(dev, &ch, &n)) {
         return false;
     }
 
-    if (channel_read != NULL) {
-        *channel_read = ch;
-    }
+    if (channel_read != NULL) *channel_read = ch;
 
-    // Parse reports from main reports channel (3) or gyro_rv channel (5)
-    if (ch == SHTP_CHANNEL_REPORTS || ch == SHTP_CHANNEL_GYRO_ROTATION_VECTOR) {
+//    if (ch == SHTP_CHANNEL_REPORTS || ch == SHTP_CHANNEL_GYRO_ROTATION_VECTOR) {
+    if (ch == SHTP_CHANNEL_REPORTS){
         parse_reports(dev, dev->rx_buf, n);
     }
 
     return true;
 }
 
+// --- Getters ---
+
 bool BNO085_GetQuaternion(bno085_t* dev, bno085_quat_t* out) {
     if (!dev->quat.valid) return false;
     *out = dev->quat;
     dev->quat.valid = false;
+    return true;
+}
+
+bool BNO085_GetGameQuaternion(bno085_t* dev, bno085_quat_t* out) {
+    if (!dev->game_quat.valid) return false;
+    *out = dev->game_quat;
+    dev->game_quat.valid = false;
+    return true;
+}
+
+bool BNO085_GetLinearAcceleration(bno085_t* dev, bno085_vec3_t* out) {
+    if (!dev->lin_accel.valid) return false;
+    *out = dev->lin_accel;
+    dev->lin_accel.valid = false;
+    return true;
+}
+
+bool BNO085_GetGyroscope(bno085_t* dev, bno085_vec3_t* out) {
+    if (!dev->gyro.valid) return false;
+    *out = dev->gyro;
+    dev->gyro.valid = false;
+    return true;
+}
+
+bool BNO085_GetMagnetometer(bno085_t* dev, bno085_vec3_t* out) {
+    if (!dev->mag.valid) return false;
+    *out = dev->mag;
+    dev->mag.valid = false;
     return true;
 }
 

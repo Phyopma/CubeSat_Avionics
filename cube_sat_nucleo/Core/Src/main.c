@@ -49,9 +49,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-bno085_t my_imu;
-bno085_quat_t my_quat;
-char log_buf[128];
+bno085_t imu;
+
 uint32_t last_print_time = 0;
 /* USER CODE END PV */
 
@@ -125,14 +124,36 @@ int main(void)
 
   // IMU Begin
 
-  	BNO085_Log("--- CubeSat Avionics BNO085 Test ---\n");
 
-    if (BNO085_Begin(&my_imu)) {
-      BNO085_Log("BNO085 initialization successful.\n");
-    } else {
-      BNO085_Log("BNO085 initialization FAILED. Freezing.\n");
+    BNO085_Log("System Booting...\r\n");
 
+    // 1. Initialize the Sensor
+    if (!BNO085_Begin(&imu)) {
+        BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
+        while(1);
     }
+    BNO085_Log("BNO085 Initialized.\r\n");
+
+    //    10000us = 10ms = 100Hz
+
+    // Standard 9-axis Fusion (North relative to Earth)
+//    BNO085_EnableRotationVector(&imu, 10000);
+
+    // 6-axis Fusion (North relative to startup, NO MAGNETOMETER)
+    // Best for CubeSat spinning if magnetorquers interfere
+//    BNO085_EnableGameRotationVector(&imu, 10000);
+
+    // Calibrated Gyroscope (rad/s) - Essential for B-Dot control
+//    BNO085_EnableGyroscope(&imu, 10000);
+
+    // Calibrated Magnetometer (uTesla) - Essential for B-Dot control
+//    BNO085_EnableMagnetometer(&imu, 20000); // 50Hz is usually enough for mag
+
+    // Linear Acceleration (m/s^2) - Gravity removed
+    BNO085_EnableLinearAccelerometer(&imu, 10000);
+
+    BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
+    uint32_t last_print_time = 0;
 
   // IMU End
 
@@ -156,30 +177,50 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  // Get the current time at the start of the loop
-	  uint32_t current_time = HAL_GetTick();
-	  BNO085_Service(&my_imu, NULL);
+//	  uint32_t current_time = HAL_GetTick();
+	  BNO085_Service(&imu, NULL);
 
-	    // Check if the service call produced a new, valid quaternion
-	    if (BNO085_GetQuaternion(&my_imu, &my_quat)) {
 
-	    	if (current_time - last_print_time >= 300)
-	    	    {
-	    	      last_print_time = current_time; // Update the last print time
+	  if (HAL_GetTick() - last_print_time > 200)
+	      {
+	          last_print_time = HAL_GetTick();
 
-	    	      // Format the *most recent* quaternion data and log it.
-	    	      // The \r\n ensures it prints on a new line.
-	    	      // The % 8.3f formats the numbers to align in columns.
-	    	      sprintf(log_buf, "\r\nQuat: i=% 8.3f, j=% 8.3f, k=% 8.3f, real=% 8.3f",
-	    	              my_quat.i, my_quat.j, my_quat.k, my_quat.real);
+	      // --- A. Rotation Vector (Quat) ---
+//	      bno085_quat_t q;
+//	      if (BNO085_GetQuaternion(&imu, &q)) {
+//	          // Log: [RV] R:1.000 I:0.000 J:0.000 K:0.000 (Acc: 0.1)
+//	          BNO085_Log("[RV] R:%.3f I:%.3f J:%.3f K:%.3f (Acc: %.2f)\r\n",
+//	                     q.real, q.i, q.j, q.k, q.accuracy_rad);
+//	      }
 
-	    	      BNO085_Log(log_buf);
-	    	    }
+	      // --- B. Game Rotation Vector (Quat - No Mag) ---
+//	      if (BNO085_GetGameQuaternion(&imu, &q)) {
+//	          // Log: [GM] R:1.000 I:0.000 ...
+//	          BNO085_Log("[GM] R:%.3f I:%.3f J:%.3f K:%.3f\r\n",
+//	                     q.real, q.i, q.j, q.k);
+//	      }
 
-	    }
+	      // --- C. Gyroscope (rad/s) ---
+//	      bno085_vec3_t g;
+//	      if (BNO085_GetGyroscope(&imu, &g)) {
+//	          // Log: [GY] X:0.01 Y:-0.02 Z:0.00
+//	          BNO085_Log("[GY] X:%.3f Y:%.3f Z:%.3f\r\n", g.x, g.y, g.z);
+//	      }
 
-	    // Add a small delay. In a real system, this would be handled
-	    // by an RTOS task or scheduler.
-	    HAL_Delay(10);
+	      // --- D. Magnetometer (uTesla) ---
+//	      bno085_vec3_t m;
+//	      if (BNO085_GetMagnetometer(&imu, &m)) {
+//	          // Log: [MG] X:20.5 Y:10.1 Z:-40.2
+//	          BNO085_Log("[MG] X:%.1f Y:%.1f Z:%.1f\r\n", m.x, m.y, m.z);
+//	      }
+
+	      // --- E. Linear Acceleration (m/s^2) ---
+	      bno085_vec3_t a;
+	      if (BNO085_GetLinearAcceleration(&imu, &a)) {
+	          // Log: [LA] X:0.1 Y:0.0 Z:9.8
+	          BNO085_Log("[LA] X:%.2f Y:%.2f Z:%.2f\r\n", a.x, a.y, a.z);
+	      }
+	  }
   }
   /* USER CODE END 3 */
 }
