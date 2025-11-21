@@ -57,6 +57,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define MTQ_SLEEP_Pin GPIO_PIN_4
+#define MTQ_SLEEP_GPIO_Port GPIOA
+#define MTQ_FAULT_Pin GPIO_PIN_5
+#define MTQ_FAULT_GPIO_Port GPIOA
 #define IMU_CS_Pin GPIO_PIN_2
 #define IMU_CS_GPIO_Port GPIOB
 #define IMU_INT_Pin GPIO_PIN_10

@@ -1,0 +1,26 @@
+/* Application/Algorithms/Inc/inner_loop_control.h */
+#ifndef INNER_LOOP_CONTROL_H
+#define INNER_LOOP_CONTROL_H
+
+#include <stdint.h>
+
+// === CONFIGURATION: CONTROL MODE ===
+#define MTQ_MODE_OPEN_LOOP
+typedef struct
+{
+    float target_current;
+    float measured_current;
+    float command_voltage;
+} mtq_state_t;
+
+// === CONFIGURATION: HARDWARE CONSTANTS ===
+#define MTQ_COIL_RESISTANCE 10.0f // Ohms (Measure with multimeter)
+#define HBRIDGE_SUPPLY_VOLTS 5.0f // Volts (Measure at VCC pin)
+
+// === API Functions ===
+void InnerLoop_Init(void);
+void InnerLoop_SetTargetCurrent(float current_amps);
+void InnerLoop_Update(void);          // Must be called at 1kHz
+mtq_state_t InnerLoop_GetState(void); // for plotting
+
+#endif
