@@ -3,25 +3,23 @@
 #include "hbridge.h"
 #include "current_sensor.h"
 #include "pi_controller.h"
+#include "stdio.h"
+#include "math.h"
 
 // Private State Variables
-float target_current = 0.0f;
 PI_Config_t pi_ctrl;
-static mtq_state_t state;
+mtq_state_t state;
+static float filtered_current = 0.0f;
 
-// for tuning the PI controller (Live Expression in debugger)
-extern float current_measure;
-extern float cmd_voltage;
-
-void InnerLoop_PrintTelemetry(char *buffer)
-{
-    // Format: "Target,Measured,Voltage\r\n"
-    // Multiplied by 1000 to print as integers (mA) avoids float %f issues
-    sprintf(buffer, "%d,%d,%d\r\n",
-            (int)(target_current * 1000),
-            (int)(current_measure * 1000), // Will be 0 in Open Loop
-            (int)(cmd_voltage * 1000));
-}
+//void InnerLoop_PrintTelemetry(char *buffer)
+//{
+//    // Format: "Target,Measured,Voltage\r\n"
+//    // Multiplied by 1000 to print as integers (mA) avoids float %f issues
+//    sprintf(buffer, "%d,%d,%d\r\n",
+//            (int)(target_current * 1000),
+//            (int)(current_measure * 1000), // Will be 0 in Open Loop
+//            (int)(cmd_voltage * 1000));
+//}
 // tuning the PI controller
 
 void InnerLoop_Init(void)
@@ -30,39 +28,51 @@ void InnerLoop_Init(void)
     HBridge_Init();
     CurrentSensor_Init();
 
-    // 2. Initialize PI Controller (Always init, even if unused right now)
-    // Kp=5.0, Ki=100.0, T=0.001s (1kHz), Output Limit = Supply Voltage
-    PI_Init(&pi_ctrl, 5.0f, 100.0f, 0.001f, HBRIDGE_SUPPLY_VOLTS);
+    // 2. Initialize PI Controller
+	// Kp = 20.0 (Strong reaction to error)
+	// Ki = 100.0 (Fast correction of steady state)
+	// T = 0.001 (1kHz loop)
+	// Limit = 5.0V (Max voltage we can output)
+	PI_Init(&pi_ctrl, 5.0f, 1500.0f, 0.001f, MAX_OUTPUT_VOLTAGE);
 }
 
 void InnerLoop_SetTargetCurrent(float current_amps)
 {
-    target_current = current_amps;
+    state.target_current = current_amps;
+
 }
 
 // This function runs inside the TIM6 Interrupt (1kHz)
 void InnerLoop_Update(void)
 {
-    float cmd_voltage = 0.0f;
-
 #ifdef MTQ_MODE_OPEN_LOOP
     // === MODE A: OPEN LOOP (Active) ===
     // Physics Model: V = I * R
     // This ignores the sensor and assumes resistance is constant.
-    cmd_voltage = target_current * MTQ_COIL_RESISTANCE;
+	state.command_voltage = state.target_current * MTQ_COIL_RESISTANCE;
 
 #else
-    // === MODE B: CLOSED LOOP (Future) ===
-    // 1. Read Feedback
-    float actual_current = CurrentSensor_Read_Amps();
+	// A. Read Raw Hardware Value (Noisy!)
+	float raw_val = CurrentSensor_Read_Amps();
 
-    // 2. Run PI Algorithm
-    // This calculates voltage needed to minimize error.
-    cmd_voltage = PI_Update(&pi_ctrl, target_current, actual_current);
+	// B. Inject Sign (Your polarity logic)
+	float signed_raw = (state.command_voltage < 0.0f) ? -1.0f * fabsf(raw_val) : fabsf(raw_val);
+
+	// C. === LOW PASS FILTER (The Fix) ===
+	// Logic: Keep 90% of the old smooth value, add only 10% of the new reading.
+	// This ignores sudden spikes but tracks the true average.
+	filtered_current = (filtered_current * 0.90f) + (signed_raw * 0.10f);
+
+	// Update state with the CLEAN value
+	state.measured_current = filtered_current;
+
+	// D. Run PI on the SMOOTH value
+	// Now the PI controller won't panic because the input is smooth.
+	state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
 #endif
 
     // 3. Apply Command to H-Bridge
-    HBridge_SetVoltage(cmd_voltage, HBRIDGE_SUPPLY_VOLTS);
+    HBridge_SetVoltage(state.command_voltage, MAX_OUTPUT_VOLTAGE);
 }
 
 mtq_state_t InnerLoop_GetState(void)

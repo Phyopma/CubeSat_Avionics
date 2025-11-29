@@ -1,5 +1,5 @@
 #include "hbridge.h"
-#include "main.h" // Provides access to htim2 handle and GPIO definitions
+#include "main.h"
 #include <math.h>
 #include <stdbool.h>
 
@@ -12,7 +12,6 @@ void HBridge_Init(void)
     HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 
     // Enable the Driver (Release the Sleep Pin)
-    // Assumes 'MTQ_SLEEP' label was defined in CubeMX for PA4
     HAL_GPIO_WritePin(MTQ_SLEEP_GPIO_Port, MTQ_SLEEP_Pin, GPIO_PIN_SET);
 }
 

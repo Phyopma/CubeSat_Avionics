@@ -267,36 +267,53 @@ void BNO085_Reset(void) {
     HAL_Delay(50);
 }
 
-static bool BNO085_WaitForAck(bno085_t* dev) {
-    uint32_t t0 = HAL_GetTick();
-    while ((HAL_GetTick() - t0) < 500) {
-        uint8_t ch;
-        if (BNO085_Service(dev, &ch)) {
-            if (ch == SHTP_CHANNEL_CONTROL) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+//static bool BNO085_WaitForAck(bno085_t* dev) {
+//    uint32_t t0 = HAL_GetTick();
+//    while ((HAL_GetTick() - t0) < 500) {
+//        uint8_t ch;
+//        if (BNO085_Service(dev, &ch)) {
+//            if (ch == SHTP_CHANNEL_CONTROL) {
+//                return true;
+//            }
+//        }
+//    }
+//    return false;
+//}
 
 bool BNO085_Begin(bno085_t* dev) {
     memset(dev, 0, sizeof(*dev));
+
     BNO085_Reset();
 
     BNO085_Log("Waiting for BNO085 to boot...\n");
+
+    // 2. Wait for Advertisement Packet
     uint32_t t0 = HAL_GetTick();
+    bool device_found = false;
+
     while ((HAL_GetTick() - t0) < 2000) {
         uint8_t ch;
-        BNO085_Service(dev, &ch); // Flush advertisement packets
-        HAL_Delay(1);
+        // BNO085_Service reads whatever is available
+        if (BNO085_Service(dev, &ch)) {
+            // If we received any packet, the device is communicating
+            device_found = true;
+
+        }
+
+        // Break early if found, but give it a moment to stabilize
+        if (device_found && (HAL_GetTick() - t0) > 100) {
+            break;
+        }
+
+        HAL_Delay(10);
     }
 
-    // Enable Sensors
-    BNO085_Log("Enabling Rotation Vector...\n");
-    if (!BNO085_EnableRotationVector(dev, 10000)) return false;
-    if (!BNO085_WaitForAck(dev)) return false;
+    if (!device_found) {
+        BNO085_Log("BNO085 Boot Timeout. Check wiring.\n");
+        return false;
+    }
 
+    BNO085_Log("BNO085 Boot Successful.\n");
     return true;
 }
 
@@ -380,5 +397,8 @@ void BNO085_Log(const char* fmt, ...) {
     va_start(args, fmt);
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
+    while (HAL_UART_GetState(&huart2) != HAL_UART_STATE_READY)
+    	;
+
+	HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
 }

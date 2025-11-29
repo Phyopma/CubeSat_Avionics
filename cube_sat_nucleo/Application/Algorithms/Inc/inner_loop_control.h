@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // === CONFIGURATION: CONTROL MODE ===
-#define MTQ_MODE_OPEN_LOOP
+//#define MTQ_MODE_OPEN_LOOP
 typedef struct
 {
     float target_current;
@@ -15,7 +15,10 @@ typedef struct
 
 // === CONFIGURATION: HARDWARE CONSTANTS ===
 #define MTQ_COIL_RESISTANCE 10.0f // Ohms (Measure with multimeter)
-#define HBRIDGE_SUPPLY_VOLTS 5.0f // Volts (Measure at VCC pin)
+//#define HBRIDGE_SUPPLY_VOLTS 5.0f // Volts (Measure at VCC pin)
+// Hardware Constants for Tuning
+// When testing with 5V, max output is 5.0V
+#define MAX_OUTPUT_VOLTAGE 5.0f
 
 // === API Functions ===
 void InnerLoop_Init(void);

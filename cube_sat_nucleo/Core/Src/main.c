@@ -30,8 +30,8 @@
 #include "adt7420.h"
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
-#include "Application/Algorithms/Inc/inner_loop_control.h"
-#include "teleplot.h"
+#include "inner_loop_control.h"
+//#include "teleplot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,12 +42,12 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ENABLE_ADT7420 0
-#define ENABLE_BNO085_ROTATION_VECTOR 0
+#define ENABLE_BNO085_ROTATION_VECTOR 1
 #define ENABLE_BNO085_GAME_ROTATION_VECTOR 0
 #define ENABLE_BNO085_GYROSCOPE 0
 #define ENABLE_BNO085_MAGNETOMETER 0
 #define ENABLE_BNO085_LINEAR_ACCELERATION 0
-#define ENABLE_INNER_LOOP_CONTROL 1
+#define ENABLE_INNER_LOOP_CONTROL 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,6 +65,10 @@ uint32_t last_print_time = 0;
 #if ENABLE_ADT7420
 static ADT7420_Handle adt7420_sensor;
 #endif
+
+#if ENABLE_INNER_LOOP_CONTROL
+mtq_state_t data;
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,9 +83,9 @@ void SystemClock_Config(void);
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
 
@@ -153,34 +157,33 @@ int main(void)
 
 //    10000us = 10ms = 100Hz
 
-// Standard 9-axis Fusion (North relative to Earth)
 #if ENABLE_BNO085_ROTATION_VECTOR
-  BNO085_EnableRotationVector(&imu, 10000);
+  BNO085_Log("Enabling Rotation Vector...\r\n");
+  if (!BNO085_EnableRotationVector(&imu, 10000)) BNO085_Log("Failed to enable RV\r\n");
 #endif
 
-  // 6-axis Fusion (North relative to startup, NO MAGNETOMETER)
-  // Best for CubeSat spinning if magnetorquers interfere
 #if ENABLE_BNO085_GAME_ROTATION_VECTOR
+  BNO085_Log("Enabling Game Rotation Vector...\r\n");
   BNO085_EnableGameRotationVector(&imu, 10000);
 #endif
 
-  // Calibrated Gyroscope (rad/s) - Essential for B-Dot control
 #if ENABLE_BNO085_GYROSCOPE
-  BNO085_EnableGyroscope(&imu, 10000);
+  BNO085_Log("Enabling Gyroscope...\r\n");
+  if (!BNO085_EnableGyroscope(&imu, 10000)) BNO085_Log("Failed to enable Gyro\r\n");
 #endif
 
-  // Calibrated Magnetometer (uTesla) - Essential for B-Dot control
 #if ENABLE_BNO085_MAGNETOMETER
-  BNO085_EnableMagnetometer(&imu, 20000); // 50Hz is usually enough for mag
+  BNO085_Log("Enabling Magnetometer...\r\n");
+  BNO085_EnableMagnetometer(&imu, 10000);
 #endif
 
-  // Linear Acceleration (m/s^2) - Gravity removed
 #if ENABLE_BNO085_LINEAR_ACCELERATION
+  BNO085_Log("Enabling Linear Accel...\r\n");
   BNO085_EnableLinearAccelerometer(&imu, 10000);
 #endif
 
   BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
-  uint32_t last_print_time = 0;
+//  uint32_t last_print_time = 0;
 
 #endif
 
@@ -192,8 +195,8 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim6);
 
   // TEST: Request 50mA Current
-  InnerLoop_SetTargetCurrent(0.05f);
-  char msg_buffer[64];
+  InnerLoop_SetTargetCurrent(0.03f);
+
 #endif
 
   /* USER CODE END 2 */
@@ -222,24 +225,56 @@ int main(void)
     // // 2. Send via DMA (Non-blocking)
     // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)msg_buffer, strlen(msg_buffer));
 
-    mtq_state_t data = InnerLoop_GetState();
+    data = InnerLoop_GetState();
 
     // 2. Send to Teleplot
-    Teleplot_Update("Target", data.target_current);
-    Teleplot_Update("Voltage", data.command_voltage);
+	// Plot the Target Current (Blue line)
+	Teleplot_Update("Target", data.target_current * 1000);
 
+	// Plot Measured Current (Green line - Essential for Tuning!)
+	Teleplot_Update("Current", data.measured_current * 1000);
+
+	Teleplot_Update("Error", (data.target_current - data.measured_current) * 1000);
+
+	// Plot the Voltage being applied (Red line)
+	Teleplot_Update("Voltage", data.command_voltage);
     HAL_Delay(50);
 
-#endif
-/* USER CODE END WHILE */
 
-/* USER CODE BEGIN 3 */
+//    // 1. MANUALLY Force 5.0V output (Full Power)
+//        // This bypasses the PI controller completely.
+//        HBridge_SetVoltage(voltage, 5.0f);
+//
+//        // 2. Read the sensor directly
+//
+//        float raw_amps = CurrentSensor_Read_Amps();
+//
+//        // 3. Teleplot Debugging
+//        // "ForceVolts" should show 5.0
+//        Teleplot_Update("ForceVolts", voltage);
+//        // "SensAmps" will show the real sensor reading
+//        Teleplot_Update("SensAmps", raw_amps);
+//
+//        // 4. Console Log for sanity (Check Serial Terminal if Teleplot is confusing)
+//        if (raw_amps == 0.0f) {
+//            // If this prints, your sensor is either broken, address is wrong, or shunt is blown.
+//            // Or your battery is unplugged.
+//            // log_printf_dma("Reading 0.0 Amps...\r\n");
+//        }
+//
+//        HAL_Delay(100);
+
+
+#endif
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
 #if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION
     BNO085_Service(&imu, NULL);
-
-    if (HAL_GetTick() - last_print_time > 200)
-    {
-      last_print_time = HAL_GetTick();
+//
+//    if (HAL_GetTick() - last_print_time > 200)
+//    {
+//      last_print_time = HAL_GetTick();
 
       // --- A. Rotation Vector (Quat) ---
 #if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR
@@ -294,31 +329,33 @@ int main(void)
         BNO085_Log("[LA] X:%.2f Y:%.2f Z:%.2f\r\n", a.x, a.y, a.z);
       }
 #endif
+//    }
 #endif
-    }
+
   }
+
   /* USER CODE END 3 */
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -329,8 +366,9 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -357,9 +395,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -372,12 +410,12 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
