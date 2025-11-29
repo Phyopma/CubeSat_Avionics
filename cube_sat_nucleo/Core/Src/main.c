@@ -1,26 +1,27 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
 #include "i2c.h"
 #include "spi.h"
+//#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -29,6 +30,8 @@
 #include "adt7420.h"
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
+//#include "inner_loop_control.h"
+//#include "teleplot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,7 +41,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ENABLE_ADT7420 0
+#define ENABLE_BNO085_ROTATION_VECTOR 0
+#define ENABLE_BNO085_GAME_ROTATION_VECTOR 1
+#define ENABLE_BNO085_GYROSCOPE 0
+#define ENABLE_BNO085_MAGNETOMETER 0
+#define ENABLE_BNO085_LINEAR_ACCELERATION 0
+#define ENABLE_INNER_LOOP_CONTROL 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,7 +60,14 @@
 /* USER CODE BEGIN PV */
 bno085_t imu;
 
-uint32_t last_print_time = 0;
+
+#if ENABLE_ADT7420
+static ADT7420_Handle adt7420_sensor;
+#endif
+
+#if ENABLE_INNER_LOOP_CONTROL
+mtq_state_t data;
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,64 +114,89 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_SPI3_Init();
+//  MX_I2C2_Init();
+//  MX_TIM2_Init();
+//  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   serial_log_init(&huart2);
   log_printf_dma("UART DMA logger online\r\n");
 
   // ADT7420 begin
-//  log_printf_dma("ADT7420 bring-up\n");
-//
-//  ADT7420_Handle t;
-//  uint8_t addr7 = 0x4B; // set to match JP2/JP1
-//
-//
-//  if (ADT7420_Init(&t, &hi2c1, addr7) != HAL_OK) {
-//	  //		printf("ADT7420 init failed (address 0x%02X)\r\n", addr7);
-//	  log_printf_dma("Init failed at 0x%02X\n", addr7);
-//	  Error_Handler();
-//  }
-//
-//  uint8_t id=0, cfg=0;
-//  ADT7420_ReadID(&t, &id);
-//  ADT7420_ReadConfig(&t, &cfg);
-  //  log_printf_dma("ID=0x%02X (expect 0xCB), CONFIG=0x%02X\n", id, cfg);
-  // ADT7420_Set16Bit(&t, 0); // uncomment to force 13-bit
+#if ENABLE_ADT7420
+  log_printf_dma("ADT7420 bring-up\r\n");
+
+  uint8_t addr7 = 0x4B; // set to match JP2/JP1
+
+  if (ADT7420_Init(&adt7420_sensor, &hi2c1, addr7) != HAL_OK)
+  {
+    log_printf_dma("ADT7420 init failed (address 0x%02X)\r\n", addr7);
+    Error_Handler();
+  }
+
+  uint8_t id = 0, cfg = 0;
+  ADT7420_ReadID(&adt7420_sensor, &id);
+  ADT7420_ReadConfig(&adt7420_sensor, &cfg);
+  log_printf_dma("ADT7420 ID=0x%02X (expect 0xCB), CONFIG=0x%02X\r\n", id, cfg);
+  // ADT7420_Set16Bit(&adt7420_sensor, 0); // uncomment to force 13-bit
+#endif
   // ADT7420 end
 
   // IMU Begin
+#if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION)
+  BNO085_Log("System Booting...\r\n");
 
+  // 1. Initialize the Sensor
+  if (!BNO085_Begin(&imu))
+  {
+    BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
+    while (1)
+      ;
+  }
+  BNO085_Log("BNO085 Initialized.\r\n");
 
-    BNO085_Log("System Booting...\r\n");
+//    10000us = 10ms = 100Hz
 
-    // 1. Initialize the Sensor
-    if (!BNO085_Begin(&imu)) {
-        BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
-        while(1);
-    }
-    BNO085_Log("BNO085 Initialized.\r\n");
+#if ENABLE_BNO085_ROTATION_VECTOR
+  BNO085_Log("Enabling Rotation Vector...\r\n");
+  if (!BNO085_EnableRotationVector(&imu, 10000)) BNO085_Log("Failed to enable RV\r\n");
+#endif
 
-    //    10000us = 10ms = 100Hz
+#if ENABLE_BNO085_GAME_ROTATION_VECTOR
+  BNO085_Log("Enabling Game Rotation Vector...\r\n");
+  BNO085_EnableGameRotationVector(&imu, 10000);
+#endif
 
-    // Standard 9-axis Fusion (North relative to Earth)
-//    BNO085_EnableRotationVector(&imu, 10000);
+#if ENABLE_BNO085_GYROSCOPE
+  BNO085_Log("Enabling Gyroscope...\r\n");
+  if (!BNO085_EnableGyroscope(&imu, 10000)) BNO085_Log("Failed to enable Gyro\r\n");
+#endif
 
-    // 6-axis Fusion (North relative to startup, NO MAGNETOMETER)
-    // Best for CubeSat spinning if magnetorquers interfere
-//    BNO085_EnableGameRotationVector(&imu, 10000);
+#if ENABLE_BNO085_MAGNETOMETER
+  BNO085_Log("Enabling Magnetometer...\r\n");
+  BNO085_EnableMagnetometer(&imu, 10000);
+#endif
 
-    // Calibrated Gyroscope (rad/s) - Essential for B-Dot control
-//    BNO085_EnableGyroscope(&imu, 10000);
+#if ENABLE_BNO085_LINEAR_ACCELERATION
+  BNO085_Log("Enabling Linear Accel...\r\n");
+  BNO085_EnableLinearAccelerometer(&imu, 10000);
+#endif
 
-    // Calibrated Magnetometer (uTesla) - Essential for B-Dot control
-//    BNO085_EnableMagnetometer(&imu, 20000); // 50Hz is usually enough for mag
+  BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
+//  uint32_t last_print_time = 0;
 
-    // Linear Acceleration (m/s^2) - Gravity removed
-    BNO085_EnableLinearAccelerometer(&imu, 10000);
+#endif
 
-    BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
-    uint32_t last_print_time = 0;
+#if ENABLE_INNER_LOOP_CONTROL
+  // Initialize the Inner Loop (Starts Drivers & Math)
+  InnerLoop_Init();
 
-  // IMU End
+  // Start the Control Loop Timer (TIM6)
+  HAL_TIM_Base_Start_IT(&htim6);
+
+  // TEST: Request 50mA Current
+  InnerLoop_SetTargetCurrent(0.03f);
+
+#endif
 
   /* USER CODE END 2 */
 
@@ -163,65 +204,135 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-// ADT7420 begin
-//	float c = 0.0f;
-//	if (ADT7420_ReadCelsius(&t, &c) == HAL_OK) {
-//	  log_printf_dma("Temp = %.3f C", c);
-//	} else {
-//	  log_printf_dma("Temp read error");
-//	}
-//	HAL_Delay(100);
-//	ADT7420 end
+#if ENABLE_ADT7420
+    float c = 0.0f;
+    if (ADT7420_ReadCelsius(&adt7420_sensor, &c) == HAL_OK)
+    {
+      log_printf_dma("Temp = %.3f C\r\n", c);
+    }
+    else
+    {
+      log_printf_dma("Temp read error\r\n");
+    }
+    HAL_Delay(100);
+#endif
 
+#if ENABLE_INNER_LOOP_CONTROL
+    // // 1. Prepare Data
+    // InnerLoop_PrintTelemetry(msg_buffer);
+
+    // // 2. Send via DMA (Non-blocking)
+    // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)msg_buffer, strlen(msg_buffer));
+
+    data = InnerLoop_GetState();
+
+    // 2. Send to Teleplot
+	// Plot the Target Current (Blue line)
+	Teleplot_Update("Target", data.target_current * 1000);
+
+	// Plot Measured Current (Green line - Essential for Tuning!)
+	Teleplot_Update("Current", data.measured_current * 1000);
+
+	Teleplot_Update("Error", (data.target_current - data.measured_current) * 1000);
+
+	// Plot the Voltage being applied (Red line)
+	Teleplot_Update("Voltage", data.command_voltage);
+    HAL_Delay(50);
+
+
+//    // 1. MANUALLY Force 5.0V output (Full Power)
+//        // This bypasses the PI controller completely.
+//        HBridge_SetVoltage(voltage, 5.0f);
+//
+//        // 2. Read the sensor directly
+//
+//        float raw_amps = CurrentSensor_Read_Amps();
+//
+//        // 3. Teleplot Debugging
+//        // "ForceVolts" should show 5.0
+//        Teleplot_Update("ForceVolts", voltage);
+//        // "SensAmps" will show the real sensor reading
+//        Teleplot_Update("SensAmps", raw_amps);
+//
+//        // 4. Console Log for sanity (Check Serial Terminal if Teleplot is confusing)
+//        if (raw_amps == 0.0f) {
+//            // If this prints, your sensor is either broken, address is wrong, or shunt is blown.
+//            // Or your battery is unplugged.
+//            // log_printf_dma("Reading 0.0 Amps...\r\n");
+//        }
+//
+//        HAL_Delay(100);
+
+
+#endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  // Get the current time at the start of the loop
-//	  uint32_t current_time = HAL_GetTick();
-	  BNO085_Service(&imu, NULL);
+#if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION
+    BNO085_Service(&imu, NULL);
+//
+//    if (HAL_GetTick() - last_print_time > 200)
+//    {
+//      last_print_time = HAL_GetTick();
 
+      // --- A. Rotation Vector (Quat) ---
+#if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR
+      bno085_quat_t q;
+#endif
 
-	  if (HAL_GetTick() - last_print_time > 200)
-	      {
-	          last_print_time = HAL_GetTick();
+#if ENABLE_BNO085_ROTATION_VECTOR
+      if (BNO085_GetQuaternion(&imu, &q))
+      {
+        // Log: [RV] R:1.000 I:0.000 J:0.000 K:0.000 (Acc: 0.1)
+        BNO085_Log("[RV] R:%.3f I:%.3f J:%.3f K:%.3f (Acc: %.2f)\r\n",
+                   q.real, q.i, q.j, q.k, q.accuracy_rad);
+      }
+#endif
 
-	      // --- A. Rotation Vector (Quat) ---
-//	      bno085_quat_t q;
-//	      if (BNO085_GetQuaternion(&imu, &q)) {
-//	          // Log: [RV] R:1.000 I:0.000 J:0.000 K:0.000 (Acc: 0.1)
-//	          BNO085_Log("[RV] R:%.3f I:%.3f J:%.3f K:%.3f (Acc: %.2f)\r\n",
-//	                     q.real, q.i, q.j, q.k, q.accuracy_rad);
-//	      }
+      // --- B. Game Rotation Vector (Quat - No Mag) ---
+#if ENABLE_BNO085_GAME_ROTATION_VECTOR
+      if (BNO085_GetGameQuaternion(&imu, &q))
+      {
+        // Log: [GM] R:1.000 I:0.000 ...
+        BNO085_Log("[GM] R:%.3f I:%.3f J:%.3f K:%.3f\r\n",
+                   q.real, q.i, q.j, q.k);
+      }
+#endif
 
-	      // --- B. Game Rotation Vector (Quat - No Mag) ---
-//	      if (BNO085_GetGameQuaternion(&imu, &q)) {
-//	          // Log: [GM] R:1.000 I:0.000 ...
-//	          BNO085_Log("[GM] R:%.3f I:%.3f J:%.3f K:%.3f\r\n",
-//	                     q.real, q.i, q.j, q.k);
-//	      }
+      // --- C. Gyroscope (rad/s) ---
+#if ENABLE_BNO085_GYROSCOPE
+      bno085_vec3_t g;
+      if (BNO085_GetGyroscope(&imu, &g))
+      {
+        // Log: [GY] X:0.01 Y:-0.02 Z:0.00
+        BNO085_Log("[GY] X:%.3f Y:%.3f Z:%.3f\r\n", g.x, g.y, g.z);
+      }
+#endif
 
-	      // --- C. Gyroscope (rad/s) ---
-//	      bno085_vec3_t g;
-//	      if (BNO085_GetGyroscope(&imu, &g)) {
-//	          // Log: [GY] X:0.01 Y:-0.02 Z:0.00
-//	          BNO085_Log("[GY] X:%.3f Y:%.3f Z:%.3f\r\n", g.x, g.y, g.z);
-//	      }
+      // --- D. Magnetometer (uTesla) ---
+#if ENABLE_BNO085_MAGNETOMETER
+      bno085_vec3_t m;
+      if (BNO085_GetMagnetometer(&imu, &m))
+      {
+        // Log: [MG] X:20.5 Y:10.1 Z:-40.2
+        BNO085_Log("[MG] X:%.1f Y:%.1f Z:%.1f\r\n", m.x, m.y, m.z);
+      }
+#endif
 
-	      // --- D. Magnetometer (uTesla) ---
-//	      bno085_vec3_t m;
-//	      if (BNO085_GetMagnetometer(&imu, &m)) {
-//	          // Log: [MG] X:20.5 Y:10.1 Z:-40.2
-//	          BNO085_Log("[MG] X:%.1f Y:%.1f Z:%.1f\r\n", m.x, m.y, m.z);
-//	      }
+      // --- E. Linear Acceleration (m/s^2) ---
+#if ENABLE_BNO085_LINEAR_ACCELERATION
+      bno085_vec3_t a;
+      if (BNO085_GetLinearAcceleration(&imu, &a))
+      {
+        // Log: [LA] X:0.1 Y:0.0 Z:9.8
+        BNO085_Log("[LA] X:%.2f Y:%.2f Z:%.2f\r\n", a.x, a.y, a.z);
+      }
+#endif
+//    }
+#endif
 
-	      // --- E. Linear Acceleration (m/s^2) ---
-	      bno085_vec3_t a;
-	      if (BNO085_GetLinearAcceleration(&imu, &a)) {
-	          // Log: [LA] X:0.1 Y:0.0 Z:9.8
-	          BNO085_Log("[LA] X:%.2f Y:%.2f Z:%.2f\r\n", a.x, a.y, a.z);
-	      }
-	  }
   }
+
   /* USER CODE END 3 */
 }
 
@@ -269,6 +380,16 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+#if ENABLE_INNER_LOOP_CONTROL
+// Timer 6 Interrupt - Runs exactly every 1ms (1kHz)
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM6)
+  {
+    InnerLoop_Update();
+  }
+}
+#endif
 
 /* USER CODE END 4 */
 
