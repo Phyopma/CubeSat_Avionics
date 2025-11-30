@@ -31,7 +31,7 @@
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
 #include "inner_loop_control.h"
-//#include "teleplot.h"
+#include "teleplot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,12 +42,12 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ENABLE_ADT7420 0
-#define ENABLE_BNO085_ROTATION_VECTOR 1
+#define ENABLE_BNO085_ROTATION_VECTOR 0
 #define ENABLE_BNO085_GAME_ROTATION_VECTOR 0
 #define ENABLE_BNO085_GYROSCOPE 0
 #define ENABLE_BNO085_MAGNETOMETER 0
 #define ENABLE_BNO085_LINEAR_ACCELERATION 0
-#define ENABLE_INNER_LOOP_CONTROL 0
+#define ENABLE_INNER_LOOP_CONTROL 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -60,7 +60,6 @@
 /* USER CODE BEGIN PV */
 bno085_t imu;
 
-uint32_t last_print_time = 0;
 
 #if ENABLE_ADT7420
 static ADT7420_Handle adt7420_sensor;
@@ -143,15 +142,13 @@ int main(void)
   // ADT7420 end
 
   // IMU Begin
-#if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION
+#if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION)
   BNO085_Log("System Booting...\r\n");
 
   // 1. Initialize the Sensor
-  if (!BNO085_Begin(&imu))
+  while (!BNO085_Begin(&imu))
   {
     BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
-    while (1)
-      ;
   }
   BNO085_Log("BNO085 Initialized.\r\n");
 
@@ -159,27 +156,47 @@ int main(void)
 
 #if ENABLE_BNO085_ROTATION_VECTOR
   BNO085_Log("Enabling Rotation Vector...\r\n");
-  if (!BNO085_EnableRotationVector(&imu, 10000)) BNO085_Log("Failed to enable RV\r\n");
+  BNO085_EnableRotationVector(&imu, 10000);
+  while (!BNO085_WaitForAck(&imu)) {
+  	BNO085_Log("Enabling Rotation Vector...\r\n");
+  	BNO085_EnableRotationVector(&imu, 10000);
+  	}
 #endif
 
 #if ENABLE_BNO085_GAME_ROTATION_VECTOR
   BNO085_Log("Enabling Game Rotation Vector...\r\n");
   BNO085_EnableGameRotationVector(&imu, 10000);
+  while (!BNO085_WaitForAck(&imu)) {
+	  BNO085_Log("Enabling Game Rotation Vector...\r\n");
+	  BNO085_EnableGameRotationVector(&imu, 10000);
+  }
 #endif
 
 #if ENABLE_BNO085_GYROSCOPE
   BNO085_Log("Enabling Gyroscope...\r\n");
-  if (!BNO085_EnableGyroscope(&imu, 10000)) BNO085_Log("Failed to enable Gyro\r\n");
+  BNO085_EnableGyroscope(&imu, 10000);
+	while (!BNO085_WaitForAck(&imu)) {
+	  BNO085_Log("Enabling Gyroscope...\r\n");
+	 BNO085_EnableGyroscope(&imu, 10000);
+	}
 #endif
 
 #if ENABLE_BNO085_MAGNETOMETER
   BNO085_Log("Enabling Magnetometer...\r\n");
   BNO085_EnableMagnetometer(&imu, 10000);
+	while (!BNO085_WaitForAck(&imu)) {
+	  BNO085_Log("Enabling Magnetometer...\r\n");
+	  BNO085_EnableMagnetometer(&imu, 10000);
+	}
 #endif
 
 #if ENABLE_BNO085_LINEAR_ACCELERATION
   BNO085_Log("Enabling Linear Accel...\r\n");
   BNO085_EnableLinearAccelerometer(&imu, 10000);
+	while (!BNO085_WaitForAck(&imu)) {
+	  BNO085_Log("Enabling Linear Accel...\r\n");
+	  BNO085_EnableLinearAccelerometer(&imu, 10000);
+	}
 #endif
 
   BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
