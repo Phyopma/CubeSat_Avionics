@@ -157,10 +157,10 @@ int main(void)
 #if ENABLE_BNO085_ROTATION_VECTOR
   BNO085_Log("Enabling Rotation Vector...\r\n");
   BNO085_EnableRotationVector(&imu, 10000);
-  while (!BNO085_WaitForAck(&imu)) {
-  	BNO085_Log("Enabling Rotation Vector...\r\n");
-  	BNO085_EnableRotationVector(&imu, 10000);
-  	}
+//  while (!BNO085_WaitForAck(&imu)) {
+//  	BNO085_Log("Enabling Rotation Vector...\r\n");
+//  	BNO085_EnableRotationVector(&imu, 10000);
+//  	}
 #endif
 
 #if ENABLE_BNO085_GAME_ROTATION_VECTOR
