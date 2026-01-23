@@ -127,8 +127,8 @@ sequenceDiagram
 
 ## Documentation
 
-- [Telemetry & Control Interfaces](./api-endpoints.md)
-- [Project Architecture](./architecture.mmd)
+- [Telemetry & Control Interfaces](./cube_sat_nucleo/api-endpoints.md)
+- [Project Architecture](./cube_sat_nucleo/architecture.mmd)
 
 ## Project Structure
 
