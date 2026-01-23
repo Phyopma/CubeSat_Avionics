@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant TIM as Timer (1kHz)
+    participant CTRL as InnerControlLoop
+    participant SENS as Sensors (IMU/Current)
+    participant ALG as PI Controller
+    participant ACT as H-Bridge
+    participant TELE as Teleplot/UART
+
+    Note over TIM, TELE: 1kHz Control Cycle
+
+    TIM->>CTRL: PeriodElapsedCallback (IRQ)
+    activate CTRL
+    
+    CTRL->>SENS: Read Feedback (Current/IMU)
+    SENS-->>CTRL: Raw Data
+    
+    CTRL->>ALG: Update PI(Target, Measured)
+    activate ALG
+    ALG-->>CTRL: Voltage Command
+    deactivate ALG
+    
+    CTRL->>ACT: Set PWM Duty Cycle
+    
+    CTRL->>TELE: Queue Telemetry (Target, Current, Voltage)
+    deactivate CTRL
+
+    Note right of TELE: DMA Transfer (Async)

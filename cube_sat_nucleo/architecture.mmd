@@ -1,0 +1,67 @@
+graph TB
+    subgraph Hardware
+        MCU[STM32L476RG MCU]
+        IMU[BNO085 IMU]
+        TEMP[ADT7420 Temp Sensor]
+        MOTOR[H-Bridge / Actuator]
+        SENS[Current Sensor]
+        PC[PC / Telemetry]
+    end
+
+    subgraph Firmware_Core
+        HAL[STM32 HAL]
+        DMA[DMA Controller]
+        UART[UART Driver]
+        I2C[I2C Driver]
+        SPI[SPI Driver]
+        TIM[Timer Driver]
+    end
+
+    subgraph Application_Drivers
+        BNO_DRV[BNO085 Driver]
+        ADT_DRV[ADT7420 Driver]
+        HB_DRV[H-Bridge Driver]
+        CS_DRV[Current Sensor Driver]
+    end
+
+    subgraph Algorithms
+        CTRL[Inner Loop Control]
+        PI[PI Controller]
+    end
+
+    subgraph Utilities
+        LOG[Serial Logger]
+        PLOT[Teleplot]
+    end
+
+    %% Hardware Connections
+    MCU <-->|I2C| TEMP
+    MCU <-->|SPI| IMU
+    MCU <-->|PWM| MOTOR
+    MCU <-->|ADC| SENS
+    MCU <-->|UART| PC
+
+    %% Firmware Layers
+    HAL <--> UART
+    HAL <--> I2C
+    HAL <--> SPI
+    HAL <--> TIM
+
+    %% App Drivers -> HAL
+    BNO_DRV --> SPI
+    ADT_DRV --> I2C
+    HB_DRV --> TIM
+    CS_DRV --> HAL
+
+    %% Algorithms -> Drivers
+    CTRL --> BNO_DRV
+    CTRL --> CS_DRV
+    CTRL --> HB_DRV
+    CTRL --> PI
+
+    %% Utilities
+    LOG --> UART
+    PLOT --> LOG
+
+    %% Main Execution
+    CTRL -.->|1kHz IRQ| TIM
