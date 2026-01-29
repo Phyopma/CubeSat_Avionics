@@ -1,5 +1,6 @@
 /* Application/Algorithms/Src/inner_loop_control.c */
 #include "inner_loop_control.h"
+#include "main.h"
 #include "hbridge.h"
 #include "current_sensor.h"
 #include "pi_controller.h"
@@ -52,6 +53,21 @@ void InnerLoop_Update(void)
 	state.command_voltage = state.target_current * MTQ_COIL_RESISTANCE;
 
 #else
+#ifdef SIMULATION_MODE
+    // === MODE B-Sim: HITL SIMULATION ===
+    // 1. Read Simulated Sensor
+    state.measured_current = sim_input.current_amps;
+    
+    // 2. Run PI
+    state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
+    
+    // 3. Send Output to Simulator
+    sim_output.command_voltage = state.command_voltage;
+    sim_output.debug_flags = 0.0f;
+    // Send non-biting (SimPacket_Output_t is 8 bytes)
+    HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
+    
+#else
 	// A. Read Raw Hardware Value (Noisy!)
 	float raw_val = CurrentSensor_Read_Amps();
 
@@ -69,6 +85,7 @@ void InnerLoop_Update(void)
 	// D. Run PI on the SMOOTH value
 	// Now the PI controller won't panic because the input is smooth.
 	state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
+#endif
 #endif
 
     // 3. Apply Command to H-Bridge
