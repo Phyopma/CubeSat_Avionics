@@ -79,6 +79,7 @@ typedef struct __attribute__((packed)) {
     float gyro[3];      // x, y, z
     float mag[3];       // x, y, z
     float quat[4];      // r, i, j, k
+    float target_current_cmd; // Setpoint from host
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {

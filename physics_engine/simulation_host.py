@@ -3,86 +3,103 @@ import struct
 import time
 import math
 import sys
+import argparse
+import random
 
 # --- Configuration ---
 SERIAL_PORT = "/dev/tty.usbmodem1103" # Adjust this to your Nucleo's port
 BAUD_RATE = 115200
-DT = 0.01  # Physics step size (10ms) - Sending at 100Hz (Nucleo runs at 1kHz, we can send slower or same speed)
-           # Note: Nucleo expects packets. We should try to feed it reasonably fast.
+DT = 0.01  # Physics step size (10ms)
 
 # --- Physics Constants ---
-RESISTANCE = 25.0 # Ohms (Simulated Coil)
-INDUCTANCE = 0.05 # Henry (Simulated Coil)
+RESISTANCE = 25.0 # Ohms
+INDUCTANCE = 0.05 # Henry
 
 # --- Protocol Structs (Must match main.h) ---
-# Input to Nucleo: Current(f), Gyro[3](f), Mag[3](f), Quat[4](f)
-# Total: 1+3+3+4 = 11 floats = 44 bytes
-STRUCT_FMT_IN = "<f3f3f4f" # Little-endian
+# Input to Nucleo: Current(f), Gyro[3](f), Mag[3](f), Quat[4](f), TargetCmd(f)
+# Total: 1+3+3+4+1 = 12 floats = 48 bytes
+STRUCT_FMT_IN = "<f3f3f4ff" # Added extra 'f' at the end
 
 # Output from Nucleo: Voltage(f), Debug(f)
-# Total: 2 floats = 8 bytes
 STRUCT_FMT_OUT = "<ff"
 
+def get_args():
+    parser = argparse.ArgumentParser(description='HITL Simulation Host')
+    parser.add_argument('--mode', choices=['step', 'sine', 'random', 'manual'], default='step', help='Waveform mode')
+    parser.add_argument('--amp', type=float, default=0.04, help='Amplitude in Amps')
+    parser.add_argument('--freq', type=float, default=0.5, help='Frequency in Hz')
+    parser.add_argument('--port', type=str, default=SERIAL_PORT, help='Serial port')
+    return parser.parse_args()
+
 def main():
-    print(f"Opening Serial Port {SERIAL_PORT}...")
+    args = get_args()
+    port = args.port
+    
+    print(f"Opening Serial Port {port}...")
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+        ser = serial.Serial(port, BAUD_RATE, timeout=0.1)
     except Exception as e:
         print(f"Error opening port: {e}")
-        print("Please check your port name in the script.")
         return
 
-    print("Connected! Starting HITL Simulation...")
-    print("Sending Fake Sensor Data -> Nucleo")
-    print("Receiving Control Voltage  <- Nucleo")
-
+    print(f"Connected! Mode: {args.mode}, Amp: {args.amp}A, Freq: {args.freq}Hz")
+    
     # Simulation State
     sim_current = 0.0
-    sim_voltage = 0.0 # Applied by Nucleo
+    sim_voltage = 0.0
     sim_time = 0.0
+    target_current = 0.0
+    
+    last_step_time = 0.0
     
     try:
         while True:
-            # 1. Physics Step
-            # Simple LR Circuit Model: V = IR + L(dI/dt) => dI/dt = (V - IR) / L
+            # 1. Waveform Generation (The Setpoint)
+            if args.mode == 'step':
+                # Toggle every 1/freq seconds (half period)
+                period = 1.0 / args.freq
+                if (sim_time % period) < (period / 2):
+                    target_current = args.amp
+                else:
+                     target_current = 0.0 # Return to zero or -amp? Let's do 0 to Amp.
+            elif args.mode == 'sine':
+                target_current = args.amp * math.sin(2 * math.pi * args.freq * sim_time)
+            elif args.mode == 'random':
+                 period = 1.0 / args.freq # Change target every period
+                 if sim_time - last_step_time > period:
+                     target_current = random.uniform(-args.amp, args.amp)
+                     last_step_time = sim_time
+            elif args.mode == 'manual':
+                target_current = args.amp # Constant
+
+            # 2. Physics Step (Inner Loop Plant)
+            # V = IR + L(dI/dt)
             di_dt = (sim_voltage - (sim_current * RESISTANCE)) / INDUCTANCE
             sim_current += di_dt * DT
             
-            # Simulated IMU (Just spinning about Z axis)
-            omega_z = 0.1 # rad/s
+            # Simulated IMU (Detailed physics comes later in Phase 2)
+            omega_z = 0.1
             angle = omega_z * sim_time
-            
             fake_gyro = (0.0, 0.0, omega_z)
-            fake_mag  = (20.0, 0.0, 40.0) # Gauss/uT constant
-            # Quaternion for Z rotation
-            # q = [cos(a/2), 0, 0, sin(a/2)]
+            fake_mag  = (20.0, 0.0, 40.0)
             fake_quat = (math.cos(angle/2), 0.0, 0.0, math.sin(angle/2))
 
-            # 2. Pack Data
-            # Format: Current, Gyro(3), Mag(3), Quat(4)
-            # Flatten tuples
-            data = [sim_current] + list(fake_gyro) + list(fake_mag) + list(fake_quat)
+            # 3. Pack Data including new TargetCmd
+            data = [sim_current] + list(fake_gyro) + list(fake_mag) + list(fake_quat) + [target_current]
             packet = struct.pack(STRUCT_FMT_IN, *data)
             
-            # 3. Send
+            # 4. Send & Receive
             ser.write(packet)
+            response = ser.read(struct.calcsize(STRUCT_FMT_OUT))
             
-            # 4. Receive Response (Blocking read for sync, or poll)
-            # Nucleo replies with 8 bytes
-            response = ser.read(8)
-            if len(response) == 8:
+            if len(response) == struct.calcsize(STRUCT_FMT_OUT):
                 sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, response)
             
-            # 5. Visualization (Teleplot)
-            # Print in Teleplot format: ">var:value\n"
-            # We print SimCurrent vs Target (we don't know Nucleo's target here easily unless we infer or it sends it)
-            # But we can see what the requested Voltage is.
-            # And we can plot our Simulated Current.
-            print(f">SimCurrent:{sim_current*1000:.2f}") # mA
+            # 5. Visualization
+            # Teleplot sees the Requested Target vs Actual Simulated Current
+            print(f">Target:{target_current*1000:.2f}")
+            print(f">SimCurrent:{sim_current*1000:.2f}")
             print(f">CmdVoltage:{sim_voltage:.2f}")
-            
-            # Check debug flag
-            # print(f">Debug:{debug_val}") 
 
             sim_time += DT
             time.sleep(DT)

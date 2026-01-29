@@ -55,8 +55,12 @@ void InnerLoop_Update(void)
 #else
 #ifdef SIMULATION_MODE
     // === MODE B-Sim: HITL SIMULATION ===
-    // 1. Read Simulated Sensor
+	// 1. In Simulation Mode, we override the PHYSICAL Sensor readings
+	//    with data received from Python via UART.
     state.measured_current = sim_input.current_amps;
+    
+    // 2. We also obey the TARGET requested by Python (since Outer Loop isn't running)
+    state.target_current = sim_input.target_current_cmd;
     
     // 2. Run PI
     state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
