@@ -66,7 +66,7 @@ void InnerLoop_Update(void)
     state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
     
     // 3. Send Output to Simulator
-    sim_output.header = 0xB562; // Sync Word
+    sim_output.header = 0x62B5; // Sync Word (Sends 0xB5 then 0x62 on Little Endian)
     sim_output.command_voltage = state.command_voltage;
     sim_output.debug_flags = 0.0f;
     // Send non-biting (SimPacket_Output_t is 10 bytes now)

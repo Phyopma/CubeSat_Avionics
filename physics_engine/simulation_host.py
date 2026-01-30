@@ -110,22 +110,26 @@ def main():
             
             # Read Response with Sync Header (0xB5 0x62)
             # This prevents byte misalignment (reading float from middle of packet)
-            while True:
-                # Read 1st byte
+            scan_count = 0
+            MAX_SCAN = 50 # Don't get stuck forever
+            while scan_count < MAX_SCAN:
+                scan_count +=1
                 b1 = ser.read(1)
                 if len(b1) == 0: # Timeout
                     break 
                 if b1 == b'\xb5':
                     # Read 2nd byte
                     b2 = ser.read(1)
+                    if len(b2) == 0: break
+                    
                     if b2 == b'\x62':
                         # HEADER FOUND! Read the payload (2 floats = 8 bytes)
                         payload = ser.read(8)
                         if len(payload) == 8:
-                            sim_voltage, debug_val = struct.unpack("<ff", payload)
-                            break # Success!
+                            sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, payload)
+                            break # Success! (Exit loop to process)
                         else:
-                            print("Warning: Incomplete payload")
+                            # Incomplete payload
                             break
             
             # Error Calculation
