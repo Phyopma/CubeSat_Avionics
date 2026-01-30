@@ -134,6 +134,10 @@ def main():
             
             # Error Calculation
             sim_error = target_current - sim_current
+            if abs(target_current) > 1e-4:
+                sim_error_pct = (abs(sim_error) / abs(target_current)) * 100.0
+            else:
+                sim_error_pct = 0.0
             
             # NaN Protection / Auto-Reset
             if math.isnan(sim_current) or math.isnan(sim_voltage):
@@ -141,6 +145,7 @@ def main():
                  sim_current = 0.0
                  sim_voltage = 0.0
                  sim_error = 0.0
+                 sim_error_pct = 0.0
             
             # 5. Visualization (UDP to Teleplot)
             # Format: varName:timestamp:value\n
@@ -149,6 +154,7 @@ def main():
                 f"Target:{now_ms}:{target_current*1000:.2f}\n"
                 f"SimCurrent:{now_ms}:{sim_current*1000:.2f}\n"
                 f"Error:{now_ms}:{sim_error*1000:.2f}\n"
+                f"ErrorPct:{now_ms}:{sim_error_pct:.2f}\n"
                 f"CmdVoltage:{now_ms}:{sim_voltage:.2f}\n"
             )
             sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
