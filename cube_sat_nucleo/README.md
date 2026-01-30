@@ -36,6 +36,12 @@ graph TB
         CS_DRV[Current Sensor Driver]
     end
 
+    subgraph Simulation [Phase 1: HITL]
+        HOST[Python Physics Engine]
+    end
+
+    HOST <-->|UART Binary| MCU
+
     subgraph Algorithms
         CTRL[Inner Loop Control]
         PI[PI Controller]

@@ -1,5 +1,6 @@
 /* Application/Algorithms/Src/inner_loop_control.c */
 #include "inner_loop_control.h"
+#include "main.h"
 #include "hbridge.h"
 #include "current_sensor.h"
 #include "pi_controller.h"
@@ -29,7 +30,7 @@ void InnerLoop_Init(void)
     CurrentSensor_Init();
 
     // 2. Initialize PI Controller
-	// Kp = 20.0 (Strong reaction to error)
+	// Kp = 5.0 (Restored original fine-tuned value)
 	// Ki = 100.0 (Fast correction of steady state)
 	// T = 0.001 (1kHz loop)
 	// Limit = 5.0V (Max voltage we can output)
@@ -52,6 +53,26 @@ void InnerLoop_Update(void)
 	state.command_voltage = state.target_current * MTQ_COIL_RESISTANCE;
 
 #else
+#ifdef SIMULATION_MODE
+    // === MODE B-Sim: HITL SIMULATION ===
+	// 1. In Simulation Mode, we override the PHYSICAL Sensor readings
+	//    with data received from Python via UART.
+    state.measured_current = sim_input.current_amps;
+    
+    // 2. We also obey the TARGET requested by Python (since Outer Loop isn't running)
+    state.target_current = sim_input.target_current_cmd;
+    
+    // 2. Run PI
+    state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
+    
+    // 3. Send Output to Simulator
+    sim_output.header = 0x62B5; // Sync Word (Sends 0xB5 then 0x62 on Little Endian)
+    sim_output.command_voltage = state.command_voltage;
+    sim_output.debug_flags = 0.0f;
+    // Send non-biting (SimPacket_Output_t is 10 bytes now)
+    HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
+    
+#else
 	// A. Read Raw Hardware Value (Noisy!)
 	float raw_val = CurrentSensor_Read_Amps();
 
@@ -69,6 +90,7 @@ void InnerLoop_Update(void)
 	// D. Run PI on the SMOOTH value
 	// Now the PI controller won't panic because the input is smooth.
 	state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
+#endif
 #endif
 
     // 3. Apply Command to H-Bridge
