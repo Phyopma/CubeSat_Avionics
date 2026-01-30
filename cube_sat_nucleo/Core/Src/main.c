@@ -419,14 +419,11 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 #if ENABLE_INNER_LOOP_CONTROL
 // Timer 6 Interrupt - Runs exactly every 1ms (1kHz)
-// NOTE: In SIMULATION_MODE, we disable this timer-based update to avoid buffer overflow
-// and instead run the loop synchronously on UART packet receipt (Ping-Pong).
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM6) {
-    #ifndef SIMULATION_MODE
-      InnerLoop_Update();
-    #endif
+  if (htim->Instance == TIM6)
+  {
+    InnerLoop_Update();
   }
 }
 #endif
@@ -436,10 +433,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
-    // 1. We received a packet in `sim_input`. 
-    // Run the Inner Loop ONCE synchronously (Ping-Pong).
-    // This reads `sim_input`, runs PI, and transmits `sim_output`.
-    InnerLoop_Update();
+    // 1. We just received new inputs in `sim_input`. 
+    // The Timer Interrupt (1kHz) will pick this up automatically.
     
     // 2. Restart Reception for the next packet
     HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));

@@ -98,7 +98,14 @@ def main():
             packet = struct.pack(STRUCT_FMT_IN, *data)
             
             # 4. Send & Receive
+            # CRITICAL: Firmware runs at 1kHz, we run at 100Hz.
+            # Buffer contains ~10 old packets. Flush them to get Fresh Data.
+            ser.reset_input_buffer()
+            
             ser.write(packet)
+            
+            # Read ONE response packet (blocking with timeout)
+            # Since we just flushed, we wait for the NEXT packet from Nucleo.
             response = ser.read(struct.calcsize(STRUCT_FMT_OUT))
             
             if len(response) == struct.calcsize(STRUCT_FMT_OUT):
