@@ -12,7 +12,7 @@ import socket
 SERIAL_PORT = "/dev/tty.usbmodem1103" # Adjust this to your Nucleo's port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size (10ms)
-TELEPLOT_ADDR = ("127.0.0.1", 47269) # Teleplot UDP defaults
+TELEPLOT_ADDR = ("teleplot.fr", 34329) # User-specified Teleplot server
 
 # --- Physics Constants ---
 RESISTANCE = 25.0 # Ohms
@@ -105,8 +105,8 @@ def main():
                 sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, response)
             
             # 5. Visualization (UDP to Teleplot)
-            # Format: >varName:value\n
-            telemetry = f">Target:{target_current*1000:.2f}\n>SimCurrent:{sim_current*1000:.2f}\n>CmdVoltage:{sim_voltage:.2f}\n"
+            # Format: varName:value\n
+            telemetry = f"Target:{target_current*1000:.2f}\nSimCurrent:{sim_current*1000:.2f}\nCmdVoltage:{sim_voltage:.2f}\n"
             sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
             
             # Optional: Print status locally every 1s so terminal isn't silent
