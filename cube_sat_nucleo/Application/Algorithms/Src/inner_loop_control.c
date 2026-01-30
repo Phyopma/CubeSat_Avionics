@@ -30,7 +30,7 @@ void InnerLoop_Init(void)
     CurrentSensor_Init();
 
     // 2. Initialize PI Controller
-	// Kp = 20.0 (Strong reaction to error)
+	// Kp = 5.0 (Restored original fine-tuned value)
 	// Ki = 100.0 (Fast correction of steady state)
 	// T = 0.001 (1kHz loop)
 	// Limit = 5.0V (Max voltage we can output)

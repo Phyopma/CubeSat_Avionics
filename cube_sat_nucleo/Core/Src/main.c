@@ -159,7 +159,7 @@ int main(void)
     BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
   }
   BNO085_Log("BNO085 Initialized.\r\n");
-#endif
+
 
 //    10000us = 10ms = 100Hz
 

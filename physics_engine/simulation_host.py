@@ -6,10 +6,13 @@ import sys
 import argparse
 import random
 
+import socket
+
 # --- Configuration ---
 SERIAL_PORT = "/dev/tty.usbmodem1103" # Adjust this to your Nucleo's port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size (10ms)
+TELEPLOT_ADDR = ("127.0.0.1", 47269) # Teleplot UDP defaults
 
 # --- Physics Constants ---
 RESISTANCE = 25.0 # Ohms
@@ -41,6 +44,9 @@ def main():
     except Exception as e:
         print(f"Error opening port: {e}")
         return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    print(f"Streaming Teleplot data to {TELEPLOT_ADDR}")
 
     print(f"Connected! Mode: {args.mode}, Amp: {args.amp}A, Freq: {args.freq}Hz")
     
@@ -77,6 +83,9 @@ def main():
             di_dt = (sim_voltage - (sim_current * RESISTANCE)) / INDUCTANCE
             sim_current += di_dt * DT
             
+            # Clamp current to prevent Overflow if unstable
+            sim_current = max(min(sim_current, 10.0), -10.0)
+            
             # Simulated IMU (Detailed physics comes later in Phase 2)
             omega_z = 0.1
             angle = omega_z * sim_time
@@ -95,11 +104,14 @@ def main():
             if len(response) == struct.calcsize(STRUCT_FMT_OUT):
                 sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, response)
             
-            # 5. Visualization
-            # Teleplot sees the Requested Target vs Actual Simulated Current
-            print(f">Target:{target_current*1000:.2f}")
-            print(f">SimCurrent:{sim_current*1000:.2f}")
-            print(f">CmdVoltage:{sim_voltage:.2f}")
+            # 5. Visualization (UDP to Teleplot)
+            # Format: >varName:value\n
+            telemetry = f">Target:{target_current*1000:.2f}\n>SimCurrent:{sim_current*1000:.2f}\n>CmdVoltage:{sim_voltage:.2f}\n"
+            sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
+            
+            # Optional: Print status locally every 1s so terminal isn't silent
+            if int(sim_time / DT) % 100 == 0:
+                 print(f"t={sim_time:.1f}s | Tgt={target_current*1000:.0f}mA | Curr={sim_current*1000:.0f}mA | V={sim_voltage:.1f}V")
 
             sim_time += DT
             time.sleep(DT)
