@@ -9,7 +9,7 @@ import random
 import socket
 
 # --- Configuration ---
-SERIAL_PORT = "/dev/tty.usbmodem1103" # Adjust this to your Nucleo's port
+SERIAL_PORT = "/dev/cu.usbmodem21303" # Adjust this to your Nucleo's port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size (10ms)
 TELEPLOT_ADDR = ("teleplot.fr", 34329) # User-specified Teleplot server
@@ -108,12 +108,35 @@ def main():
             
             ser.write(packet)
             
-            # Read ONE response packet (blocking with timeout)
-            # Since we just flushed, we wait for the NEXT packet from Nucleo.
-            response = ser.read(struct.calcsize(STRUCT_FMT_OUT))
+            # Read Response with Sync Header (0xB5 0x62)
+            # This prevents byte misalignment (reading float from middle of packet)
+            while True:
+                # Read 1st byte
+                b1 = ser.read(1)
+                if len(b1) == 0: # Timeout
+                    break 
+                if b1 == b'\xb5':
+                    # Read 2nd byte
+                    b2 = ser.read(1)
+                    if b2 == b'\x62':
+                        # HEADER FOUND! Read the payload (2 floats = 8 bytes)
+                        payload = ser.read(8)
+                        if len(payload) == 8:
+                            sim_voltage, debug_val = struct.unpack("<ff", payload)
+                            break # Success!
+                        else:
+                            print("Warning: Incomplete payload")
+                            break
             
-            if len(response) == struct.calcsize(STRUCT_FMT_OUT):
-                sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, response)
+            # Error Calculation
+            sim_error = target_current - sim_current
+            
+            # NaN Protection / Auto-Reset
+            if math.isnan(sim_current) or math.isnan(sim_voltage):
+                 print(f"Warning: NaN detected. Resetting simulation state.")
+                 sim_current = 0.0
+                 sim_voltage = 0.0
+                 sim_error = 0.0
             
             # 5. Visualization (UDP to Teleplot)
             # Format: varName:timestamp:value\n
@@ -121,13 +144,14 @@ def main():
             telemetry = (
                 f"Target:{now_ms}:{target_current*1000:.2f}\n"
                 f"SimCurrent:{now_ms}:{sim_current*1000:.2f}\n"
+                f"Error:{now_ms}:{sim_error*1000:.2f}\n"
                 f"CmdVoltage:{now_ms}:{sim_voltage:.2f}\n"
             )
             sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
             
             # Optional: Print status locally every 1s so terminal isn't silent
             if int(sim_time / DT) % 100 == 0:
-                 print(f"t={sim_time:.1f}s | Tgt={target_current*1000:.0f}mA | Curr={sim_current*1000:.0f}mA | V={sim_voltage:.1f}V")
+                 print(f"t={sim_time:.1f}s | Tgt={target_current*1000:.0f}mA | Curr={sim_current*1000:.0f}mA | Err={sim_error*1000:.0f}mA | V={sim_voltage:.1f}V")
 
             sim_time += DT
             time.sleep(DT)

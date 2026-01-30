@@ -83,6 +83,7 @@ typedef struct __attribute__((packed)) {
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {
+    uint16_t header;    // 0xB5 0x62 (Synchronization Word)
     float command_voltage;
     float debug_flags;  // Placeholder for future use
 } SimPacket_Output_t;

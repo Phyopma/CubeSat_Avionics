@@ -66,9 +66,10 @@ void InnerLoop_Update(void)
     state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
     
     // 3. Send Output to Simulator
+    sim_output.header = 0xB562; // Sync Word
     sim_output.command_voltage = state.command_voltage;
     sim_output.debug_flags = 0.0f;
-    // Send non-biting (SimPacket_Output_t is 8 bytes)
+    // Send non-biting (SimPacket_Output_t is 10 bytes now)
     HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
     
 #else
