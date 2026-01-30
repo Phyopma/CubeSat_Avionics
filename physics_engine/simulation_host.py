@@ -16,7 +16,7 @@ TELEPLOT_ADDR = ("teleplot.fr", 34329) # User-specified Teleplot server
 
 # --- Physics Constants ---
 RESISTANCE = 25.0 # Ohms
-INDUCTANCE = 0.05 # Henry
+INDUCTANCE = 0.5 # Henry (Increased for HITL stability with DT=0.01)
 
 # --- Protocol Structs (Must match main.h) ---
 # Input to Nucleo: Current(f), Gyro[3](f), Mag[3](f), Quat[4](f), TargetCmd(f)
@@ -79,12 +79,16 @@ def main():
                 target_current = args.amp # Constant
 
             # 2. Physics Step (Inner Loop Plant)
+            # Model Power Supply Limit (5V Rail)
+            sim_voltage = max(min(sim_voltage, 5.0), -5.0)
+
             # V = IR + L(dI/dt)
             di_dt = (sim_voltage - (sim_current * RESISTANCE)) / INDUCTANCE
             sim_current += di_dt * DT
             
-            # Clamp current to prevent Overflow if unstable
-            sim_current = max(min(sim_current, 10.0), -10.0)
+            # Physics Check: Abs Max Current = 5V / 25R = 0.2A
+            # Safety Clamp set to 0.5A to handle transients
+            sim_current = max(min(sim_current, 0.5), -0.5)
             
             # Simulated IMU (Detailed physics comes later in Phase 2)
             omega_z = 0.1
