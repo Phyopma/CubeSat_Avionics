@@ -105,8 +105,13 @@ def main():
                 sim_voltage, debug_val = struct.unpack(STRUCT_FMT_OUT, response)
             
             # 5. Visualization (UDP to Teleplot)
-            # Format: varName:value\n
-            telemetry = f"Target:{target_current*1000:.2f}\nSimCurrent:{sim_current*1000:.2f}\nCmdVoltage:{sim_voltage:.2f}\n"
+            # Format: varName:timestamp:value\n
+            now_ms = int(time.time() * 1000)
+            telemetry = (
+                f"Target:{now_ms}:{target_current*1000:.2f}\n"
+                f"SimCurrent:{now_ms}:{sim_current*1000:.2f}\n"
+                f"CmdVoltage:{now_ms}:{sim_voltage:.2f}\n"
+            )
             sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
             
             # Optional: Print status locally every 1s so terminal isn't silent
