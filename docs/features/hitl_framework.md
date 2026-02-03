@@ -7,7 +7,7 @@ Establish a robust Hardware-in-the-Loop simulation where the Nucleo firmware con
 **Success**. The system is now stable and responsive.
 
 ### Telemetry Verification
-![Stable Sine Wave Response](/Users/phyopyae/.gemini/antigravity/brain/4dc654af-7797-4fad-9d95-fee8fb1a1be7/uploaded_media_1769800553402.png)
+![Stable Sine Wave Response](./assets/hitl-sine-wave.png)
 
 ## Debugging Journey
 
