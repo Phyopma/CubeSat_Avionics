@@ -57,6 +57,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define MTQ_SLEEP_Pin GPIO_PIN_4
+#define MTQ_SLEEP_GPIO_Port GPIOA
+#define MTQ_FAULT_Pin GPIO_PIN_5
+#define MTQ_FAULT_GPIO_Port GPIOA
 #define IMU_CS_Pin GPIO_PIN_2
 #define IMU_CS_GPIO_Port GPIOB
 #define IMU_INT_Pin GPIO_PIN_10
@@ -65,7 +69,29 @@ void Error_Handler(void);
 #define IMU_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define SIMULATION_MODE 1
+// #define SIMULATION_MODE 0 // Comment out line above to disable
 
+#ifdef SIMULATION_MODE
+// 1 byte alignment to ensure Python struct.pack() matches exactly
+typedef struct __attribute__((packed)) {
+    float current_amps;
+    float gyro[3];      // x, y, z
+    float mag[3];       // x, y, z
+    float quat[4];      // r, i, j, k
+    float target_current_cmd; // Setpoint from host
+} SimPacket_Input_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t header;    // 0xB5 0x62 (Synchronization Word)
+    float command_voltage;
+    float debug_flags;  // Placeholder for future use
+} SimPacket_Output_t;
+
+extern volatile SimPacket_Input_t sim_input;
+extern volatile SimPacket_Output_t sim_output;
+extern UART_HandleTypeDef huart2; // Ensure this is visible if needed
+#endif
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

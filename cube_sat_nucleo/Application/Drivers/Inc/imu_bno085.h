@@ -93,6 +93,7 @@ bool BNO085_Begin(bno085_t* dev);
 void BNO085_Reset(void);
 bool BNO085_Service(bno085_t* dev, uint8_t* channel_read);
 void BNO085_Log(const char* fmt, ...);
+bool BNO085_WaitForAck(bno085_t* dev);
 
 // --- Enable Sensors (Commands sent to Channel 2) ---
 bool BNO085_EnableRotationVector(bno085_t* dev, uint32_t interval_us);

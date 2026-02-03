@@ -21,7 +21,7 @@
 #include "dma.h"
 #include "i2c.h"
 #include "spi.h"
-//#include "tim.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -30,8 +30,8 @@
 #include "adt7420.h"
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
-//#include "inner_loop_control.h"
-//#include "teleplot.h"
+#include "inner_loop_control.h"
+#include "teleplot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +47,7 @@
 #define ENABLE_BNO085_GYROSCOPE 0
 #define ENABLE_BNO085_MAGNETOMETER 0
 #define ENABLE_BNO085_LINEAR_ACCELERATION 0
-#define ENABLE_INNER_LOOP_CONTROL 0
+#define ENABLE_INNER_LOOP_CONTROL 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,6 +67,11 @@ static ADT7420_Handle adt7420_sensor;
 
 #if ENABLE_INNER_LOOP_CONTROL
 mtq_state_t data;
+#endif
+
+#ifdef SIMULATION_MODE
+volatile SimPacket_Input_t sim_input;
+volatile SimPacket_Output_t sim_output;
 #endif
 /* USER CODE END PV */
 
@@ -114,15 +119,17 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_SPI3_Init();
-//  MX_I2C2_Init();
-//  MX_TIM2_Init();
-//  MX_TIM6_Init();
+  MX_I2C2_Init();
+  MX_TIM2_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+#ifndef SIMULATION_MODE
   serial_log_init(&huart2);
   log_printf_dma("UART DMA logger online\r\n");
+#endif
 
   // ADT7420 begin
-#if ENABLE_ADT7420
+#if ENABLE_ADT7420 && !defined(SIMULATION_MODE)
   log_printf_dma("ADT7420 bring-up\r\n");
 
   uint8_t addr7 = 0x4B; // set to match JP2/JP1
@@ -143,6 +150,7 @@ int main(void)
 
   // IMU Begin
 #if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION)
+#ifndef SIMULATION_MODE
   BNO085_Log("System Booting...\r\n");
 
   // 1. Initialize the Sensor
@@ -183,7 +191,7 @@ int main(void)
 
   BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
 //  uint32_t last_print_time = 0;
-
+#endif // !SIMULATION_MODE
 #endif
 
 #if ENABLE_INNER_LOOP_CONTROL
@@ -196,6 +204,10 @@ int main(void)
   // TEST: Request 50mA Current
   InnerLoop_SetTargetCurrent(0.03f);
 
+#ifdef SIMULATION_MODE
+  // Start receiving the first Simulation Packet
+  HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
+#endif
 #endif
 
   /* USER CODE END 2 */
@@ -227,6 +239,7 @@ int main(void)
     data = InnerLoop_GetState();
 
     // 2. Send to Teleplot
+#ifndef SIMULATION_MODE
 	// Plot the Target Current (Blue line)
 	Teleplot_Update("Target", data.target_current * 1000);
 
@@ -238,6 +251,7 @@ int main(void)
 	// Plot the Voltage being applied (Red line)
 	Teleplot_Update("Voltage", data.command_voltage);
     HAL_Delay(50);
+#endif // !SIMULATION_MODE
 
 
 //    // 1. MANUALLY Force 5.0V output (Full Power)
@@ -268,7 +282,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-#if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION
+#if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION) && !defined(SIMULATION_MODE)
     BNO085_Service(&imu, NULL);
 //
 //    if (HAL_GetTick() - last_print_time > 200)
@@ -387,6 +401,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   if (htim->Instance == TIM6)
   {
     InnerLoop_Update();
+  }
+}
+#endif
+
+#ifdef SIMULATION_MODE
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2)
+  {
+    // 1. We just received new inputs in `sim_input`. 
+    // The Timer Interrupt (1kHz) will pick this up automatically.
+    
+    // 2. Restart Reception for the next packet
+    HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
   }
 }
 #endif

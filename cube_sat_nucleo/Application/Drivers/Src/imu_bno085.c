@@ -259,7 +259,7 @@ static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n) {
 // --- Public API Functions ---
 
 void BNO085_Reset(void) {
-    BNO085_Log("BNO085_Reset: Toggling RST pin...\n");
+    BNO085_Log("BNO085_Reset: Toggling RST pin...\r\n");
     cs_deselect();
     HAL_GPIO_WritePin(IMU_RST_GPIO_Port, IMU_RST_Pin, GPIO_PIN_RESET);
     HAL_Delay(15);
@@ -267,7 +267,7 @@ void BNO085_Reset(void) {
     HAL_Delay(50);
 }
 
-static bool BNO085_WaitForAck(bno085_t* dev) {
+bool BNO085_WaitForAck(bno085_t* dev) {
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < 500) {
         uint8_t ch;
@@ -284,7 +284,7 @@ bool BNO085_Begin(bno085_t* dev) {
     memset(dev, 0, sizeof(*dev));
     BNO085_Reset();
 
-    BNO085_Log("Waiting for BNO085 to boot...\n");
+    BNO085_Log("Waiting for BNO085 to boot...\r\n");
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < 2000) {
         uint8_t ch;
@@ -293,7 +293,7 @@ bool BNO085_Begin(bno085_t* dev) {
     }
 
     // Enable Sensors
-    BNO085_Log("Enabling Rotation Vector...\n");
+    BNO085_Log("Enabling Rotation Vector...\r\n");
     if (!BNO085_EnableRotationVector(dev, 10000)) return false;
     if (!BNO085_WaitForAck(dev)) return false;
 
@@ -380,5 +380,6 @@ void BNO085_Log(const char* fmt, ...) {
     va_start(args, fmt);
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    while (HAL_UART_GetState(&huart2) != HAL_UART_STATE_READY);
     HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
 }
