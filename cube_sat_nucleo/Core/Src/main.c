@@ -161,6 +161,7 @@ int main(void)
   BNO085_Log("BNO085 Initialized.\r\n");
 #endif
 
+
 //    10000us = 10ms = 100Hz
 
 #if ENABLE_BNO085_ROTATION_VECTOR
@@ -432,7 +433,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
-    // 1. We received a packet in `sim_input`. Logic is handled in InnerLoop_Update reading this atomic(ish) struct.
+    // 1. We just received new inputs in `sim_input`. 
+    // The Timer Interrupt (1kHz) will pick this up automatically.
     
     // 2. Restart Reception for the next packet
     HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));

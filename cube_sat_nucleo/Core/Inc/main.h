@@ -76,12 +76,12 @@ void Error_Handler(void);
 // 1 byte alignment to ensure Python struct.pack() matches exactly
 typedef struct __attribute__((packed)) {
     float current_amps;
-    float gyro[3];      // x, y, z
-    float mag[3];       // x, y, z
     float quat[4];      // r, i, j, k
+    float target_current_cmd; // Setpoint from host
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {
+    uint16_t header;    // 0xB5 0x62 (Synchronization Word)
     float command_voltage;
     float debug_flags;  // Placeholder for future use
 } SimPacket_Output_t;
