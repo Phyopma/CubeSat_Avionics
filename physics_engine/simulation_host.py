@@ -46,6 +46,7 @@ def main():
     
     # Simulation State Variables for Telemetry
     sim_time = 0.0
+    sim_current = 0.0 # Coil Actuall Current (State)
     target_current = 0.0
     last_step_time = 0.0
     
@@ -76,18 +77,7 @@ def main():
             # Get Environmental B-Field in Body Frame
             B_body = sat.get_magnetic_field(sim_time)
             
-            # Assume Coil is aligned with Z-axis for now (single axis test)
-            # Dipole Moment m = [0, 0, m_z]
-            # m_z corresponds to current * N * A. Let's send raw current as "target" 
-            # and assume Firmware calculates dipole.
-            # OR checking previous code: packet sent `target_current`.
-            # Firmware sends back voltage?
-            # Actually, `physics.py` takes torque.
-            # Torque = m x B.
-            # Simulating torque based on what Firmware *commanded* would require reading back the command.
-            # But in the loop: PC sends data -> Firmware computes -> Firmware Actuates.
-            # So we apply torque based on LAST step's firmware command.
-            
+            # Mechanical Step
             sat.rk4_step(sim_time, DT, torque_applied)
             
             # Extract state for Serial Packet
@@ -98,18 +88,8 @@ def main():
             # --- 3. Communication ---
             # Send Sensor Data to Firmware
             # Packet: Current(1), Gyro(3), Mag(3), Quat(4), TargetCmd(1)
-            # Note: "Current" here is loopback check? Or simulated current?
-            # Previous code sent `sim_current`. Let's assume ideal current source for now = `target_current`.
-            # Or model RL circuit if needed. Let's stick to ideal for Stage 1 Physics.
-            
-            # BNO085 provides Quat [i, j, k, real] = [x, y, z, w].
-            # Our physics uses [w, x, y, z].
-            # Adjust order if necessary. Let's send [w, x, y, z] and let Firmware handle it.
-            # BNO085: Real is last? Check datasheet/driver.
-            # Usually BNO085 reports Q14 fixed point.
-            # Let's send standardized [w, x, y, z] and let C-code handle conversion if needed.
-            
-            comms.send_packet(target_current, w, B_body * 1e6, q, target_current) # Mag in uT? or T?
+            # We send sim_current as "Measured" so Firmware PI loops on it.
+            comms.send_packet(sim_current, w, B_body * 1e6, q, target_current) # Mag in uT? or T?
             # Firmware expects: BNO085 units?
             # Physics B in Tesla.
             # If Firmware print shows "20.5 uT", then we should likely send uT or T depending on `imu_bno085.c`.
@@ -123,22 +103,20 @@ def main():
             if response:
                 firmware_voltage, debug_val = response
                 
-                # Compute Torque from Voltage? 
-                # Firmware controls H-Bridge Voltage.
-                # I = V/R (steady state) or dI/dt = (V-IR)/L.
-                # m = N*I*A.
-                # Torque = m x B.
-                
-                # Model the coil circuit
+                # --- Electrical Model (RL Circuit) ---
+                # V = IR + L(dI/dt) => dI/dt = (V - IR) / L
                 R_coil = 25.0 # Ohms
-                I_coil = firmware_voltage / R_coil # Simple resistive model for now
+                L_coil = 0.1  # Henry (Approximation)
                 
+                di_dt = (firmware_voltage - (sim_current * R_coil)) / L_coil
+                sim_current += di_dt * DT
+                
+                # Compute Torque
                 # Assume Z-axis coil
                 # Area = 0.01 m^2, Turns = 400? (Guess) -> Eff Area ~ 4
                 # m_z = n_turns * current * area
-                # Let's assume m_z = I_coil * 0.2 (scale factor)
-                m_eff = 0.2 # Am^2 per Amp
-                m_vec = np.array([0.0, 0.0, I_coil * m_eff])
+                m_eff = 0.4 # Am^2 per Amp (Guess)
+                m_vec = np.array([0.0, 0.0, sim_current * m_eff])
                 
                 torque_applied = np.cross(m_vec, B_body)
                 

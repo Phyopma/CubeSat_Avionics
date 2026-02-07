@@ -1,6 +1,6 @@
 # agents.md
 
-## Project: CubeSat Magnetic Attitude Control System (M-ACS) implementation
+## Project: CubeSat Magnetic Attitude Control System (M-ACS) implementation (2U Configuration)
 
 ### 1. System Architecture & Dataflow Overview
 
