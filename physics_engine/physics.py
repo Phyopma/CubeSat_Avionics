@@ -25,7 +25,9 @@ class SatellitePhysics:
         # Orbit period ~ 90 mins = 5400s
         # Omega_orbit = 2*pi / 5400
         angle = (2 * np.pi / 5400.0) * t
-        B_inertial = 50e-6 * np.array([np.sin(angle), 0.0, np.cos(angle)])
+        # Shift phase so at t=0, B is along X-axis (sin(90)=1) to maximize torque with Z-magnetorquer
+        # B = [50uT, 0, 0]
+        B_inertial = 50e-6 * np.array([np.cos(angle), 0.0, np.sin(angle)])
         
         # Rotate into Body Frame: B_body = R(q) * B_inertial
         q = self.state[0:4]

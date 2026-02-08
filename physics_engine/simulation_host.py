@@ -15,7 +15,7 @@ from comms import SerialInterface
 SERIAL_PORT = "/dev/cu.usbmodem21303" # Adjust this to your Nucleo's port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz)
-TELEPLOT_ADDR = ("teleplot.fr", 34329) # User-specified Teleplot server
+TELEPLOT_ADDR = ("teleplot.fr", 2472) # User-specified Teleplot server
 
 def get_args():
     parser = argparse.ArgumentParser(description='HITL Simulation Host')
@@ -104,12 +104,15 @@ def main():
                 firmware_voltage, debug_val = response
                 
                 # --- Electrical Model (RL Circuit) ---
-                # V = IR + L(dI/dt) => dI/dt = (V - IR) / L
+                # V = IR + L(dI/dt)
                 R_coil = 25.0 # Ohms
                 L_coil = 0.1  # Henry (Approximation)
                 
-                di_dt = (firmware_voltage - (sim_current * R_coil)) / L_coil
-                sim_current += di_dt * DT
+                # Analytic solution for RL circuit step response over timestep DT
+                # I(t+dt) = I(t)*exp(-R/L * dt) + (V/R)*(1 - exp(-R/L * dt))
+                decay_factor = math.exp(-(R_coil / L_coil) * DT)
+                I_steady = firmware_voltage / R_coil
+                sim_current = sim_current * decay_factor + I_steady * (1 - decay_factor)
                 
                 # Compute Torque
                 # Assume Z-axis coil
@@ -120,19 +123,25 @@ def main():
                 
                 torque_applied = np.cross(m_vec, B_body)
                 
+                # Local Print Torque
+                # if int(sim_time / DT) % 100 == 0: 
+                #     print(f"DEBUG: B_body={B_body} m_vec={m_vec} torque={torque_applied}")
+
             # --- 4. Logging / Teleplot ---
             now_ms = int(time.time() * 1000)
             telemetry = (
-                f"Time:{now_ms}:{sim_time:.2f}\n"
                 f"TargetA:{now_ms}:{target_current*1000:.2f}\n" 
                 f"CmdVolts:{now_ms}:{firmware_voltage:.2f}\n"
-                f"OmegaZ:{now_ms}:{w[2]:.4f}\n"
+                f"OmegaZ:{now_ms}:{w[2]:.6f}\n"
+                f"OmegaY:{now_ms}:{w[1]:.6f}\n"
+                f"TorqueX:{now_ms}:{torque_applied[0]:.8f}\n"
+                f"TorqueY:{now_ms}:{torque_applied[1]:.8f}\n"
             )
             sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
 
             # Local Print
             if int(sim_time / DT) % 100 == 0:
-                 print(f"t={sim_time:.1f}s | Wz={w[2]:.3f} | V={firmware_voltage:.2f}")
+                 print(f"t={sim_time:.1f}s | Wz={w[2]:.5f} | V={firmware_voltage:.2f}")
 
             sim_time += DT
             time.sleep(DT)
