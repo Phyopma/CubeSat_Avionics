@@ -62,12 +62,20 @@ void InnerLoop_Update(void)
     state.measured_current_y = sim_input.current_amps_y;
     state.measured_current_z = sim_input.current_amps_z;
     
-    // 2. Run PI for all 3 axes ONLY when new data arrives
-    // This prevents integrator windup due to 1kHz vs 20Hz mismatch.
+    // 2. Run Control Logic (PI or Open Loop) when new data arrives
     if (sim_data_ready) {
-        state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
-        state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
-        state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
+        if (sim_input.debug_flags & 0x01) {
+            // === OPEN LOOP OVERRIDE (Debug) ===
+            // Force V = I * R (Bypassing PI)
+            state.command_voltage_x = state.target_current_x * MTQ_COIL_RESISTANCE;
+            state.command_voltage_y = state.target_current_y * MTQ_COIL_RESISTANCE;
+            state.command_voltage_z = state.target_current_z * MTQ_COIL_RESISTANCE;
+        } else {
+            // === CLOSED LOOP (PI) ===
+            state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
+            state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
+            state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
+        }
         sim_data_ready = 0;
     }
     

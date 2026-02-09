@@ -85,7 +85,8 @@ typedef struct __attribute__((packed)) {
     float k_bdot;       // B-Dot Gain
     float kp;           // Pointing Proportional Gain
     float kd;           // Pointing Derivative Gain
-    float target_current_cmd; // Keeping this for now as generic command or debug
+    uint8_t debug_flags; // Bit 0: Open Loop (Bypass PI)
+    uint8_t padding[3];  // Align to 4-byte boundary
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {

@@ -30,6 +30,8 @@ def get_args():
                         help='Simulation duration in seconds (0 = infinite)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress console output')
+    parser.add_argument('--open-loop', action='store_true',
+                        help='Bypass PI controller on firmware (V=I*R)')
     
     # Controller Gains (sent to firmware for runtime tuning)
     parser.add_argument('--kbdot', type=float, default=5000000.0,
@@ -116,7 +118,8 @@ def main():
             estimated_current = sat_currents.tolist()
             
             # Send sensor data to firmware, receive commands
-            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.kd, 0.0)
+            debug_flags = 1 if args.open_loop else 0
+            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.kd, debug_flags)
             response = comms.read_packet()
             
             if response:
