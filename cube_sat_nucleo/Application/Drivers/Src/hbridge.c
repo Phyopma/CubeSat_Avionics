@@ -15,8 +15,14 @@ void HBridge_Init(void)
     HAL_GPIO_WritePin(MTQ_SLEEP_GPIO_Port, MTQ_SLEEP_Pin, GPIO_PIN_SET);
 }
 
-void HBridge_SetVoltage(float voltage, float max_supply)
+void HBridge_SetVoltage(uint8_t axis, float voltage, float max_supply)
 {
+    // For now, only Z-axis (Axis 2) is connected to the physical H-Bridge on this board.
+    // X and Y are simulated in firmware logic but don't drive pins yet.
+    if (axis != 2) {
+        return;
+    }
+
     // 1. Clamp voltage request to available supply
     if (voltage > max_supply)
         voltage = max_supply;

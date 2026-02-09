@@ -14,10 +14,11 @@ void HBridge_Init(void);
 
 /**
  * @brief Sets the H-Bridge output voltage via PWM duty cycle.
+ * @param axis: 0=X, 1=Y, 2=Z
  * @param voltage_volts: Desired voltage (can be positive or negative).
  * @param max_supply_volts: The actual battery voltage (VCC) supplying the bridge.
  */
-void HBridge_SetVoltage(float voltage_volts, float max_supply_volts);
+void HBridge_SetVoltage(uint8_t axis, float voltage_volts, float max_supply_volts);
 
 /**
  * @brief Puts the H-Bridge into low-power sleep mode.
