@@ -5,17 +5,17 @@ import time
 class SerialInterface:
     def __init__(self, port, baud_rate):
         self.ser = serial.Serial(port, baud_rate, timeout=0.1)
-        self.struct_fmt_in = "<f3f3f4ff" # Current, Gyro[3], Mag[3], Quat[4], TargetCmd
-        self.struct_fmt_out = "<ff"      # Voltage, Debug
+        # Input to Firmware: Header(uint16), Current(3), Gyro(3), Mag(3), Quat(4), Kbdot(1), Kp(1), Kd(1), TargetCmd(1)
+        self.struct_fmt_in = "<H3f3f3f4fffff" 
+        # Output from Firmware: Voltage(3), Mode(1), Padding(3) = 16 bytes
+        self.struct_fmt_out = "<3fB3x"      
         self.sync_byte_1 = b'\xb5'
         self.sync_byte_2 = b'\x62'
 
-    def send_packet(self, current, gyro, mag, quat, target_cmd):
+    def send_packet(self, current_xyz, gyro, mag, quat, k_bdot, kp, kd, target_cmd):
         # Flatten data
-        # Quat assumed [w, x, y, z] in Python, but need to check firmware expectation
-        # Firmware usually expects valid quat. 
-        # Sending: Current(1), Gyro(3), Mag(3), Quat(4), Target(1) = 12 floats = 48 bytes
-        data = [current] + list(gyro) + list(mag) + list(quat) + [target_cmd]
+        # Sync Header 0x62B5 (B5 then 62 on Little Endian)
+        data = [0x62B5] + list(current_xyz) + list(gyro) + list(mag) + list(quat) + [k_bdot, kp, kd, target_cmd]
         packet = struct.pack(self.struct_fmt_in, *data)
         
         # Flush input to ensure we get fresh data response to this packet
@@ -33,8 +33,9 @@ class SerialInterface:
                 b2 = self.ser.read(1)
                 if b2 == self.sync_byte_2:
                     # Header Found, read payload
-                    payload = self.ser.read(8) # 2 floats
-                    if len(payload) == 8:
+                    # Payload: 3 Voltages + 1 Debug = 4 floats = 16 bytes
+                    payload = self.ser.read(16) 
+                    if len(payload) == 16:
                         return struct.unpack(self.struct_fmt_out, payload)
         return None
 

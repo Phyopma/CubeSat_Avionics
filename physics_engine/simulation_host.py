@@ -1,154 +1,191 @@
+"""
+ADCS Simulation Host v3.0 - HITL Only
+Runs Hardware-In-The-Loop simulation with real STM32 firmware.
+No mock firmware - always requires physical hardware connection.
+"""
 import struct
 import time
 import math
 import sys
 import argparse
-import random
-import socket
 import numpy as np
 
-# Import our new modules
 from physics import SatellitePhysics
 from comms import SerialInterface
+from telemetry import TelemetryManager, VisualizerSender
 
 # --- Configuration ---
-SERIAL_PORT = "/dev/cu.usbmodem21303" # Adjust this to your Nucleo's port
+SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz)
-TELEPLOT_ADDR = ("teleplot.fr", 2472) # User-specified Teleplot server
+TELEPLOT_ADDR = ("teleplot.fr", 28011)
 
 def get_args():
-    parser = argparse.ArgumentParser(description='HITL Simulation Host')
-    parser.add_argument('--mode', choices=['step', 'sine', 'random', 'manual'], default='step', help='Waveform mode')
-    parser.add_argument('--amp', type=float, default=0.04, help='Amplitude in Amps')
-    parser.add_argument('--freq', type=float, default=0.5, help='Frequency in Hz')
-    parser.add_argument('--port', type=str, default=SERIAL_PORT, help='Serial port')
+    parser = argparse.ArgumentParser(description='ADCS Simulation Host (HITL Only)')
+    parser.add_argument('--scenario', choices=['detumble', 'pointing'], default='detumble',
+                        help='Simulation scenario')
+    parser.add_argument('--initial_omega', nargs=3, type=float, metavar=('WX', 'WY', 'WZ'),
+                        help='Initial angular velocity [rad/s]')
+    parser.add_argument('--duration', type=float, default=0,
+                        help='Simulation duration in seconds (0 = infinite)')
+    parser.add_argument('--quiet', action='store_true',
+                        help='Suppress console output')
+    
+    # Controller Gains (sent to firmware for runtime tuning)
+    parser.add_argument('--kbdot', type=float, default=5000000.0,
+                        help='B-dot gain for detumble mode')
+    parser.add_argument('--kp', type=float, default=0.010,
+                        help='Proportional gain for pointing mode')
+    parser.add_argument('--kd', type=float, default=0.300,
+                        help='Derivative gain for pointing mode')
+    
+    # Hardware
+    parser.add_argument('--port', type=str, default=SERIAL_PORT,
+                        help='Serial port for Nucleo board')
+    
     return parser.parse_args()
+
 
 def main():
     args = get_args()
-    port = args.port
     
-    print(f"Initializing Physics Engine...")
+    if not args.quiet:
+        print("--- ADCS Simulation Host v3.0 (HITL) ---")
+        print(f"Port: {args.port}")
+        print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_D={args.kd}")
+    
+    # Initialize components
     sat = SatellitePhysics()
+    tel = TelemetryManager(TELEPLOT_ADDR)
+    viz = VisualizerSender()
     
-    print(f"Opening Serial Port {port}...")
+    # Set initial conditions based on scenario
+    if args.initial_omega:
+        w_init = np.array(args.initial_omega)
+    elif args.scenario == 'detumble':
+        w_init = np.array([0.5, 0.5, 0.5])  # High tumble for detumble test
+    else:  # pointing
+        w_init = np.array([0.05, 0.05, 0.05])  # Low tumble for pointing
+    sat.state[4:7] = w_init
+    
+    if not args.quiet:
+        print(f"Scenario: {args.scenario}, Initial ω: {w_init}")
+    
+    # Connect to firmware
     try:
-        comms = SerialInterface(port, BAUD_RATE)
+        comms = SerialInterface(args.port, BAUD_RATE)
     except Exception as e:
-        print(f"Error opening port: {e}")
-        return
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    print(f"Streaming Teleplot data to {TELEPLOT_ADDR}")
-
-    print(f"Connected! Mode: {args.mode}, Amp: {args.amp}A, Freq: {args.freq}Hz")
+        print(f"ERROR: Cannot open port {args.port}: {e}")
+        print("Make sure the Nucleo board is connected and the port is correct.")
+        sys.exit(1)
     
-    # Simulation State Variables for Telemetry
+    if not args.quiet:
+        print("Connected to firmware. Starting simulation...")
+    
+    # Simulation state
     sim_time = 0.0
-    sim_current = 0.0 # Coil Actuall Current (State)
-    target_current = 0.0
-    last_step_time = 0.0
-    
-    # Internal Physics State Integration
-    # Torque applied by coils (in Body Frame)
     torque_applied = np.array([0.0, 0.0, 0.0])
-
+    sat_currents = np.array([0.0, 0.0, 0.0])
+    firmware_voltages = np.array([0.0, 0.0, 0.0])
+    adcs_mode_id = 0
+    
     try:
         while True:
-            # --- 1. Waveform Logic (The "Reference" Command for Testing) ---
-            if args.mode == 'step':
-                period = 1.0 / args.freq
-                if (sim_time % period) < (period / 2):
-                    target_current = args.amp
-                else:
-                    target_current = 0.0
-            elif args.mode == 'sine':
-                target_current = args.amp * math.sin(2 * math.pi * args.freq * sim_time)
-            elif args.mode == 'random':
-                period = 1.0 / args.freq
-                if sim_time - last_step_time > period:
-                    target_current = random.uniform(-args.amp, args.amp)
-                    last_step_time = sim_time
-            elif args.mode == 'manual':
-                target_current = args.amp
-
-            # --- 2. Physics Step ---
-            # Get Environmental B-Field in Body Frame
+            # Check termination condition
+            if args.duration > 0 and sim_time >= args.duration:
+                q = sat.state[0:4]
+                w = sat.state[4:7]
+                qw, qx, qy, qz = q
+                dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))
+                angle_err = math.degrees(math.acos(dot))
+                print(f"FINAL_STATE: W={np.linalg.norm(w):.6f} rad/s | Err={angle_err:.6f} deg")
+                break
+            
+            t_start = time.perf_counter()
+            
+            # Get environment state
             B_body = sat.get_magnetic_field(sim_time)
             
-            # Mechanical Step
+            # Step physics forward
             sat.rk4_step(sim_time, DT, torque_applied)
             
-            # Extract state for Serial Packet
-            # State: [q0, q1, q2, q3, wx, wy, wz]
             q = sat.state[0:4]
             w = sat.state[4:7]
             
-            # --- 3. Communication ---
-            # Send Sensor Data to Firmware
-            # Packet: Current(1), Gyro(3), Mag(3), Quat(4), TargetCmd(1)
-            # We send sim_current as "Measured" so Firmware PI loops on it.
-            comms.send_packet(sim_current, w, B_body * 1e6, q, target_current) # Mag in uT? or T?
-            # Firmware expects: BNO085 units?
-            # Physics B in Tesla.
-            # If Firmware print shows "20.5 uT", then we should likely send uT or T depending on `imu_bno085.c`.
-            # Let's send T and see. Or consistency with previous `fake_mag = (20.0, ...)` -> probably uT.
-            # Multiplying by 1e6.
-
-            # Read Response (Control Effort)
-            # Firmware sends: Voltage, Debug
+            # Current estimate from last voltage command (I = V/R)
+            estimated_current = sat_currents.tolist()
+            
+            # Send sensor data to firmware, receive commands
+            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.kd, 0.0)
             response = comms.read_packet()
-            firmware_voltage = 0.0
+            
             if response:
-                firmware_voltage, debug_val = response
+                firmware_voltages = np.array(response[0:3])
+                adcs_mode_id = response[3]
+            else:
+                # No response - firmware may be busy, keep last values
+                pass
+            
+            # --- Actuator Physics ---
+            R_coil = 28.0  # MTQ coil resistance
+            V_batt = 5.0   # Battery voltage limit
+            
+            # Voltage limited by power system
+            v_applied = np.clip(firmware_voltages, -V_batt, V_batt)
+            
+            # Current from Ohm's law
+            sat_currents = v_applied / R_coil
+            
+            # Magnetic dipole (m = I * k, where k = 2.88 Am²/A)
+            m_actual = sat_currents * 2.88
+            
+            # Torque from Lorentz force (τ = m × B)
+            torque_applied = np.cross(m_actual, B_body)
+            
+            # --- Telemetry (10Hz) ---
+            if not args.quiet and int(sim_time / DT) % 10 == 0:
+                qw, qx, qy, qz = q
+                dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))
+                angle_err = math.degrees(math.acos(dot))
+                m_str = tel.mode_map.get(adcs_mode_id, str(adcs_mode_id))
                 
-                # --- Electrical Model (RL Circuit) ---
-                # V = IR + L(dI/dt)
-                R_coil = 25.0 # Ohms
-                L_coil = 0.1  # Henry (Approximation)
+                # Send to Teleplot
+                i_target = sat_currents  # Use actual current as target estimate
+                tel.send_telemetry(w, q, torque_applied, sim_time, adcs_mode_id, i_target, sat_currents, firmware_voltages)
                 
-                # Analytic solution for RL circuit step response over timestep DT
-                # I(t+dt) = I(t)*exp(-R/L * dt) + (V/R)*(1 - exp(-R/L * dt))
-                decay_factor = math.exp(-(R_coil / L_coil) * DT)
-                I_steady = firmware_voltage / R_coil
-                sim_current = sim_current * decay_factor + I_steady * (1 - decay_factor)
+                # 3D Visualization
+                tel.send_3d_cube("Body,3D", q, "#3498db", pos=(0,0,0), dims=(1,1,2))
+                tel.send_3d_vector("Target,3D", (0,0,0), np.array([0,0,1]), "#2ecc71", scale=2.5, thickness=0.08)
                 
-                # Compute Torque
-                # Assume Z-axis coil
-                # Area = 0.01 m^2, Turns = 400? (Guess) -> Eff Area ~ 4
-                # m_z = n_turns * current * area
-                m_eff = 0.4 # Am^2 per Amp (Guess)
-                m_vec = np.array([0.0, 0.0, sim_current * m_eff])
+                # Body Z-axis in inertial frame
+                q0, q1, q2, q3 = q
+                body_z_inertial = np.array([
+                    2*(q1*q3 + q0*q2),
+                    2*(q2*q3 - q0*q1),
+                    1 - 2*(q1**2 + q2**2)
+                ])
+                tel.send_3d_vector("BodyZ,3D", (0,0,0), body_z_inertial, "#00ffff", scale=2.5, thickness=0.08)
                 
-                torque_applied = np.cross(m_vec, B_body)
+                # Stability check: τ·ω < 0 means damping
+                work_rate = np.dot(torque_applied, w)
+                stability_str = "DAMPING" if work_rate < 0 else "SPIN-UP"
                 
-                # Local Print Torque
-                # if int(sim_time / DT) % 100 == 0: 
-                #     print(f"DEBUG: B_body={B_body} m_vec={m_vec} torque={torque_applied}")
-
-            # --- 4. Logging / Teleplot ---
-            now_ms = int(time.time() * 1000)
-            telemetry = (
-                f"TargetA:{now_ms}:{target_current*1000:.2f}\n" 
-                f"CmdVolts:{now_ms}:{firmware_voltage:.2f}\n"
-                f"OmegaZ:{now_ms}:{w[2]:.6f}\n"
-                f"OmegaY:{now_ms}:{w[1]:.6f}\n"
-                f"TorqueX:{now_ms}:{torque_applied[0]:.8f}\n"
-                f"TorqueY:{now_ms}:{torque_applied[1]:.8f}\n"
-            )
-            sock.sendto(telemetry.encode(), TELEPLOT_ADDR)
-
-            # Local Print
-            if int(sim_time / DT) % 100 == 0:
-                 print(f"t={sim_time:.1f}s | Wz={w[2]:.5f} | V={firmware_voltage:.2f}")
-
+                # Console output (1Hz)
+                if int(sim_time / DT) % 100 == 0:
+                    print(f"t={sim_time:5.1f}s | Mode={m_str:10s} | W={np.linalg.norm(w):.3f} | Err={angle_err:5.1f}° | {stability_str} (P={work_rate:.2e}) | V={firmware_voltages}")
+            
             sim_time += DT
-            time.sleep(DT)
-
+            
+            # Real-time pacing
+            t_elapsed = time.perf_counter() - t_start
+            if not args.quiet:
+                time.sleep(max(0, DT - t_elapsed))
+    
     except KeyboardInterrupt:
-        print("\nStopping Simulation...")
+        print("\nSimulation Terminated.")
+    finally:
         comms.close()
+
 
 if __name__ == "__main__":
     main()

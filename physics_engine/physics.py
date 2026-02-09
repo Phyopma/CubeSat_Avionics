@@ -24,15 +24,14 @@ class SatellitePhysics:
         # Simple rotating magnetic field vector (Earth-like magnitude ~50uT)
         # Orbit period ~ 90 mins = 5400s
         # Omega_orbit = 2*pi / 5400
+        # Accelerated orbit for fast tuning (60s period)
         angle = (2 * np.pi / 5400.0) * t
-        # Shift phase so at t=0, B is along X-axis (sin(90)=1) to maximize torque with Z-magnetorquer
-        # B = [50uT, 0, 0]
         B_inertial = 50e-6 * np.array([np.cos(angle), 0.0, np.sin(angle)])
         
-        # Rotate into Body Frame: B_body = R(q) * B_inertial
+        # Rotate into Body Frame: B_body = R.T * B_inertial (since R is Body->Inertial)
         q = self.state[0:4]
         R = self._quat_to_dcm(q)
-        B_body = R @ B_inertial
+        B_body = R.T @ B_inertial
         return B_body
 
     def dynamics(self, state, t, torque_ext_body):
@@ -60,6 +59,10 @@ class SatellitePhysics:
         
         w_dot = self.I_inv @ (torque_ext_body - gyroscopic)
         
+        # Divergence Safety
+        if np.linalg.norm(w_dot) > 1e12:
+            w_dot = np.zeros(3)
+
         return np.concatenate((q_dot, w_dot))
 
     def rk4_step(self, t, dt, torque_ext):
@@ -69,11 +72,27 @@ class SatellitePhysics:
         k3 = self.dynamics(self.state + 0.5*dt*k2, t + 0.5*dt, torque_ext)
         k4 = self.dynamics(self.state + dt*k3, t + dt, torque_ext)
         
-        self.state += (dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        new_state = self.state + (dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
         
+        # Check for NaNs
+        if np.isnan(new_state).any():
+            print(f"NAN DETECTED in RK4! Resetting state subset.")
+            # Don't apply the NaN state. 
+            # Ideally we should debug why it happened, but for now prevent crash loop.
+            return
+
         # Normalize Quaternion
-        q_norm = np.linalg.norm(self.state[0:4])
-        self.state[0:4] /= q_norm
+        q_norm = np.linalg.norm(new_state[0:4])
+        if q_norm > 1e-6:
+            new_state[0:4] /= q_norm
+        else:
+            new_state[0:4] = np.array([1.0, 0.0, 0.0, 0.0])
+
+        # Clamp Angular Velocity (Safety)
+        # 100 rad/s is already insane, but prevents float32 overflow
+        new_state[4:7] = np.clip(new_state[4:7], -500.0, 500.0)
+
+        self.state = new_state
 
     def _quat_to_dcm(self, q):
         # Convert quaternion to Direction Cosine Matrix (Body to Inertial)

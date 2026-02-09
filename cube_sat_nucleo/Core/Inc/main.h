@@ -75,17 +75,26 @@ void Error_Handler(void);
 #ifdef SIMULATION_MODE
 // 1 byte alignment to ensure Python struct.pack() matches exactly
 typedef struct __attribute__((packed)) {
-    float current_amps;
-    float gyro[3];      // x, y, z
-    float mag[3];       // x, y, z
-    float quat[4];      // r, i, j, k
-    float target_current_cmd; // Setpoint from host
+    uint16_t header;    // 0xB5 0x62 Sync
+    float current_amps_x;
+    float current_amps_y;
+    float current_amps_z;
+    float gyro_x, gyro_y, gyro_z;
+    float mag_x, mag_y, mag_z;
+    float q_w, q_x, q_y, q_z;
+    float k_bdot;       // B-Dot Gain
+    float kp;           // Pointing Proportional Gain
+    float kd;           // Pointing Derivative Gain
+    float target_current_cmd; // Keeping this for now as generic command or debug
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {
     uint16_t header;    // 0xB5 0x62 (Synchronization Word)
-    float command_voltage;
-    float debug_flags;  // Placeholder for future use
+    float command_voltage_x;
+    float command_voltage_y;
+    float command_voltage_z;
+    uint8_t adcs_mode;  // 0:Idle, 1:Detumble, 2:Spin, 3:Pointing
+    uint8_t padding[3]; // Align to 4-byte boundaries
 } SimPacket_Output_t;
 
 extern volatile SimPacket_Input_t sim_input;

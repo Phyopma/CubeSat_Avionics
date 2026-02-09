@@ -31,6 +31,8 @@
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
 #include "inner_loop_control.h"
+#include "outer_loop_control.h"
+#include "config.h"
 #include "teleplot.h"
 /* USER CODE END Includes */
 
@@ -60,11 +62,14 @@ bno085_t imu;
 
 #if ENABLE_INNER_LOOP_CONTROL
 mtq_state_t data;
+adcs_sensor_input_t adcs_in;
+adcs_output_t adcs_out;
 #endif
 
 #ifdef SIMULATION_MODE
 volatile SimPacket_Input_t sim_input;
 volatile SimPacket_Output_t sim_output;
+volatile uint8_t sim_packet_received_main = 0;
 #endif
 /* USER CODE END PV */
 
@@ -131,78 +136,84 @@ int main(void)
   // Initialize the Inner Loop (Starts Drivers & Math)
   InnerLoop_Init();
 
+  // Initialize the Outer Loop (ADCS Algorithms)
+  OuterLoop_Init();
+
   // Start the Control Loop Timer (TIM6)
   HAL_TIM_Base_Start_IT(&htim6);
 
   // TEST: Request 50mA Current
-  InnerLoop_SetTargetCurrent(0.03f);
+  // TEST: Request 0mA Current (Zero Initial State)
+  InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
 
 #ifdef SIMULATION_MODE
-  // Start receiving the first Simulation Packet
-  HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
+  // Start receiving the first Sync Byte (State Machine)
+  extern uint8_t uart_sync_byte;
+  HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
 #endif
 
 
+
 #endif
 
-  /* USER CODE END 2 */
+// Global Flag for Main Context
+/* sim_packet_received_main is defined in global PV section */
 
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+/* USER CODE END 2 */
 
+/* Infinite loop */
+/* USER CODE BEGIN WHILE */
+while (1)
+{
 
 #if ENABLE_INNER_LOOP_CONTROL
-    // // 1. Prepare Data
-    // InnerLoop_PrintTelemetry(msg_buffer);
 
-    // // 2. Send via DMA (Non-blocking)
-    // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)msg_buffer, strlen(msg_buffer));
+    // SYNC LOGIC: In Sim Mode, only run when packet arrives.
+    // In Hardware Mode, run continuously (with delay).
+    uint8_t run_algorithm = 0;
 
-    data = InnerLoop_GetState();
+#ifdef SIMULATION_MODE
+    if (sim_packet_received_main) {
+        sim_packet_received_main = 0;
+        run_algorithm = 1;
+    }
+#else
+    run_algorithm = 1;
+#endif
 
-    // 2. Send to Teleplot
+    if (run_algorithm) {
+        data = InnerLoop_GetState();
+
+        // 1. Prepare ADCS Input
+#ifdef SIMULATION_MODE
+        adcs_in.mag_field = (vec3_t){sim_input.mag_x, sim_input.mag_y, sim_input.mag_z};
+        adcs_in.gyro = (vec3_t){sim_input.gyro_x, sim_input.gyro_y, sim_input.gyro_z};
+        adcs_in.orientation = (quat_t){sim_input.q_w, sim_input.q_x, sim_input.q_y, sim_input.q_z};
+        
+        // Dynamic Gains from Sim
+        OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.kd);
+#else
+        // TODO: Read from physical sensors (BNO085)
+#endif
+
+        // 2. Run ADCS Algorithms
+        OuterLoop_Update(&adcs_in, &adcs_out);
+
+        // 3. Command the Inner Loop
+        float target_x = adcs_out.dipole_request.x * MTQ_DIPOLE_TO_AMP;
+        float target_y = adcs_out.dipole_request.y * MTQ_DIPOLE_TO_AMP;
+        float target_z = adcs_out.dipole_request.z * MTQ_DIPOLE_TO_AMP;
+        
+        InnerLoop_SetTargetCurrent(target_x, target_y, target_z);
+
+        // 4. Telemetry (Hardware Mode Only)
 #ifndef SIMULATION_MODE
-	// Plot the Target Current (Blue line)
-	Teleplot_Update("Target", data.target_current * 1000);
-
-	// Plot Measured Current (Green line - Essential for Tuning!)
-	Teleplot_Update("Current", data.measured_current * 1000);
-
-	Teleplot_Update("Error", (data.target_current - data.measured_current) * 1000);
-
-	// Plot the Voltage being applied (Red line)
-	Teleplot_Update("Voltage", data.command_voltage);
-    HAL_Delay(50);
-#endif // !SIMULATION_MODE
-
-
-
-//    // 1. MANUALLY Force 5.0V output (Full Power)
-//        // This bypasses the PI controller completely.
-//        HBridge_SetVoltage(voltage, 5.0f);
-//
-//        // 2. Read the sensor directly
-//
-//        float raw_amps = CurrentSensor_Read_Amps();
-//
-//        // 3. Teleplot Debugging
-//        // "ForceVolts" should show 5.0
-//        Teleplot_Update("ForceVolts", voltage);
-//        // "SensAmps" will show the real sensor reading
-//        Teleplot_Update("SensAmps", raw_amps);
-//
-//        // 4. Console Log for sanity (Check Serial Terminal if Teleplot is confusing)
-//        if (raw_amps == 0.0f) {
-//            // If this prints, your sensor is either broken, address is wrong, or shunt is blown.
-//            // Or your battery is unplugged.
-//            // log_printf_dma("Reading 0.0 Amps...\r\n");
-//        }
-//
-//        HAL_Delay(100);
-
-
+        Teleplot_Update("TargetZ", target_z * 1000);
+        Teleplot_Update("CurrentZ", data.measured_current_z * 1000);
+        Teleplot_Update("VoltZ", data.command_voltage_z);
+        HAL_Delay(50); // 20Hz Loop
+#endif
+    }
 #endif
     /* USER CODE END WHILE */
 
@@ -270,15 +281,47 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 #endif
 
 #ifdef SIMULATION_MODE
+uint8_t uart_sync_byte;
+uint8_t uart_payload_buffer[sizeof(SimPacket_Input_t)];
+static enum { RX_SYNC1, RX_SYNC2, RX_PAYLOAD } uart_rx_state = RX_SYNC1;
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
-    // 1. We just received new inputs in `sim_input`. 
-    // The Timer Interrupt (1kHz) will pick this up automatically.
-    
-    // 2. Restart Reception for the next packet
-    HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
+    switch (uart_rx_state) {
+      case RX_SYNC1:
+        if (uart_sync_byte == 0xB5) {
+          uart_rx_state = RX_SYNC2;
+        }
+        HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        break;
+        
+      case RX_SYNC2:
+        if (uart_sync_byte == 0x62) {
+          uart_rx_state = RX_PAYLOAD;
+          // Store header, receive rest of packet
+          uart_payload_buffer[0] = 0xB5;
+          uart_payload_buffer[1] = 0x62;
+          HAL_UART_Receive_IT(&huart2, &uart_payload_buffer[2], sizeof(SimPacket_Input_t) - 2);
+        } else {
+          uart_rx_state = RX_SYNC1;
+          HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        }
+        break;
+        
+      case RX_PAYLOAD:
+        // Full packet received!
+        memcpy((void*)&sim_input, uart_payload_buffer, sizeof(SimPacket_Input_t));
+        
+        InnerLoop_Update_SimDataAvailable();
+        sim_packet_received_main = 1;
+        
+        // Reset for next packet
+        uart_rx_state = RX_SYNC1;
+        HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        break;
+    }
   }
 }
 #endif
