@@ -1,69 +1,105 @@
-# Simulation Parameters for Stress Testing
+# Simulation Parameters & Tuning Guide
 
-This document outlines the key parameters in the Python Physics Engine that control the satellite's physical behavior. Adjust these values to simulate different CubeSat configurations or stress-test the control algorithms.
+Reference for all tunable parameters in the HITL simulation. Parameters can be adjusted via CLI flags or by editing source files.
 
-## 1. Satellite Mass Properties (Inertia)
-**File:** `physics_engine/physics.py`
-**Class:** `SatellitePhysics`
+## 1. Satellite Mass Properties
 
-These parameters determine how hard it is to spin the satellite (Angular Acceleration for a given Torque).
+**File:** `physics_engine/physics.py` → `SatellitePhysics.__init__`
 
-| Parameter | Current Value | Description | Effect of Increasing |
-| :--- | :--- | :--- | :--- |
-| `self.I` (Matrix) | `diag([0.00833, 0.00833, 0.00333])` | Inertia Tensor for a 2U CubeSat (kg·m²). | **Slower Spin-Up**: Satellite reacts more sluggishly to torque. |
+| Parameter | Value | Unit | Description |
+|---|---|---|---|
+| `I_xx` | 0.00833 | kg·m² | Moment of inertia (X-axis, 2U long axis) |
+| `I_yy` | 0.00833 | kg·m² | Moment of inertia (Y-axis) |
+| `I_zz` | 0.00333 | kg·m² | Moment of inertia (Z-axis, 2U short axis) |
 
-**Tuning Guide:**
-*   **Asymmetric 2U:** The current values assume a uniform 2U shape ($I_{xx} = I_{yy} > I_{zz}$).
-*   **1U Config:** Change to `[0.002, 0.002, 0.002]`.
-*   **Deployables:** Increase $I_{xx}$ or $I_{yy}$ if solar panels deploy, increasing the moment of inertia.
+Based on a 2U CubeSat (10×10×20 cm, 2 kg). Adjust for different form factors:
+- **1U:** `[0.002, 0.002, 0.002]`
+- **3U:** `[0.023, 0.023, 0.003]`
 
-## 2. Magnetorquer Efficiency (Torque Generation)
-**File:** `physics_engine/simulation_host.py`
-**Loop:** `main()` (inside response handling)
+## 2. Magnetorquer Electrical Properties
 
-These parameters control how much magnetic torque is generated for a given current.
+**File:** `physics_engine/physics.py` → `SatellitePhysics.__init__`
 
-| Parameter | Current Value | Description | Effect of Increasing |
-| :--- | :--- | :--- | :--- |
-| `m_eff` | `0.4` (Am²/A) | **Effective Dipole Moment per Amp**. Represents $N \times A$ (Turns × Area). | **Stronger Actuation**: Higher torque for the same current. Faster spin-up/detumble. |
-| `R_coil` | `25.0` (Ohms) | Electrical resistance of the coil. | **Lower Current**: Reduces the current (and thus torque) for a given voltage command. |
-| `L_coil` | `0.1` (Henry) | Inductance of the coil. | **Slower Response**: Current takes longer to reach steady state after a voltage step. |
+| Parameter | Value | Unit | Description |
+|---|---|---|---|
+| `R` | 28.0 | Ω | Coil resistance (all axes identical) |
+| `L` (X, Y) | 0.025 | H | Coil inductance (25mH, longer coils) |
+| `L` (Z) | 0.012 | H | Coil inductance (12mH, shorter coil) |
+| Dipole factor | 2.88 | Am²/A | Effective magnetic dipole per amp (datasheet: 0.34 Am² @ 3.3V, R=28Ω) |
 
-**Equation:**
-$$ \tau = \mathbf{m} \times \mathbf{B} $$
-$$ \mathbf{m} = \text{Current} \times \text{m\_eff} $$
-$$ \text{Current} \approx V / R_{\text{coil}} $$
+**RL Time Constants:** τ_xy = L/R = 0.89ms, τ_z = 0.43ms. The RK4 integrator automatically sub-steps to ≤0.5ms intervals for numerical stability.
 
-## 3. Environmental Conditions
-**File:** `physics_engine/physics.py`
-**Method:** `get_magnetic_field(t)`
+## 3. Environmental Model
 
-| Parameter | Current Value | Description | Effect of Increasing |
-| :--- | :--- | :--- | :--- |
-| `50e-6` | $50 \mu T$ | Magnitude of Earth's Magnetic Field. | **Higher Torque**: Both Disturbances and Control Torques become stronger. |
-| Orbit Period | `5400s` (90 min) | Rate of B-Field rotation. | **Faster B-Field Change**: Controller must adapt faster to changing field direction. |
+**File:** `physics_engine/physics.py` → `get_magnetic_field_inertial`
 
-## 4. Simulation Timing
-**File:** `physics_engine/simulation_host.py`
+| Parameter | Value | Description |
+|---|---|---|
+| B₀ | 50 µT | Earth's field magnitude |
+| Orbit period | 5400s (90 min) | LEO orbital period |
+| Inclination | 51.6° | ISS-like orbit |
+| Dipole tilt | 11.7° | Earth's magnetic axis tilt |
+| Earth rotation | 86400s | Sidereal day period |
 
-| Parameter | Current Value | Description | Effect of Increasing |
-| :--- | :--- | :--- | :--- |
-| `DT` | `0.01` (10ms) | Physics Step Size. | **Lower Accuracy**: Physics integration may become unstable if too large. |
+The model uses a **tilted dipole** approximation: the satellite orbits in an inclined plane while Earth's magnetic axis rotates. This produces a realistic time-varying B-field in all three body axes.
+
+## 4. Control Gains
+
+**File:** `cube_sat_nucleo/Application/Algorithms/Inc/config.h`
+**Runtime override:** CLI flags `--kbdot`, `--kp`, `--ki`, `--kd`
+
+| Gain | Default | Mode | Effect |
+|---|---|---|---|
+| `K_BDOT` | 200,000 | Detumble | Positive = damping; higher magnitude = faster saturation |
+| `K_P` | 0.100 | Pointing | Higher = stiffer spring toward target |
+| `K_I` | 0.0001 | Pointing | Higher = eliminates steady-state error (risk of windup) |
+| `K_D` | 0.100 | Pointing | Higher = more damping (slower convergence) |
+
+### Inner Loop (PI Current Controller)
+
+**File:** `config.h`
+
+| Gain | Value | Description |
+|---|---|---|
+| `PIL_KP` | 5.0 | Proportional gain |
+| `PIL_KI` | 1500.0 | Integral gain |
+| `PIL_T` | 0.001 | Sample time (1kHz) |
+| `PIL_MAX_VOLTAGE` | 3.3V | Output clamp (datasheet typical supply) |
+
+## 5. State Machine Thresholds
+
+| Threshold | Value | Transition |
+|---|---|---|
+| `DETUMBLE_OMEGA_THRESH` | 0.03 rad/s | Detumble → Pointing |
+| `POINTING_OMEGA_THRESH` | 0.15 rad/s | Pointing → Detumble (safety) |
+
+## 6. Simulation Timing
+
+**CLI flags:** `--dt`, `--realtime`
+
+| Mode | Step Size | Speed | Best For |
+|---|---|---|---|
+| Fast (default) | 0.1s | ~10 min/orbit | Quick iteration |
+| Realtime | 1.0s | 90 min/orbit | Realistic timing |
+| Custom | `--dt <val>` | Varies | Precision testing |
+
+The physics engine automatically sub-steps the RL circuit dynamics within each outer step to maintain numerical stability.
 
 ## Stress Testing Scenarios
 
-1.  **Weak Actuator Test:**
-    *   Reduce `m_eff` to `0.1`.
-    *   **Goal:** Verify B-Dot controller can still detumble, albeit slowly.
+```bash
+# 1. Weak Actuator (reduce dipole effectiveness)
+#    Edit physics.py: m_actual = i * 1.0 (instead of 2.88)
 
-2.  **High Inertia Test:**
-    *   Double `self.I` values.
-    *   **Goal:** Simulate a heavy deployable payload.
+# 2. High Inertia (heavy payload)
+#    Edit physics.py: self.I = np.diag([0.017, 0.017, 0.007])
 
-3.  **Low Friction/Damping Test:**
-    *   Currently, there is **NO** environmental drag torque.
-    *   **Goal:** The satellite should conserve energy perfectly (Angular velocity constant constant when `target_current = 0`).
+# 3. Extreme Tumble
+uv run simulation_host.py --scenario detumble --initial_omega 3.0 3.0 3.0
 
-4.  **Sensor Noise (Future):**
-    *   Add `random.gauss(0, sigma)` to `B_body` in `simulation_host.py` before sending to firmware.
-    *   **Goal:** Test robustness of the B-Dot derivative filter.
+# 4. 180° Singularity Recovery
+uv run simulation_host.py --scenario pointing --initial_omega 0.01 0.01 0.01
+
+# 5. Open Loop Verification (bypass PI)
+uv run simulation_host.py --scenario detumble --open-loop --debug
+```

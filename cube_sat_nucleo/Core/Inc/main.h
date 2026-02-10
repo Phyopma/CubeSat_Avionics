@@ -86,6 +86,7 @@ typedef struct __attribute__((packed)) {
     float kp;           // Pointing Proportional Gain
     float ki;           // Pointing Integral Gain
     float kd;           // Pointing Derivative Gain
+    float dt;           // Simulation Step Size
     uint8_t debug_flags; // Bit 0: Open Loop (Bypass PI)
     uint8_t padding[3];  // Align to 4-byte boundary
 } SimPacket_Input_t;

@@ -1,50 +1,103 @@
-# Physics Engine (HITL Host)
+# Physics Engine — HITL Simulation Host
 
-This directory contains the Python-based "Physics Engine" for the Hardware-in-the-Loop (HITL) simulation. It simulates the CubeSat's environment and dynamics, communicating with the STM32 Nucleo firmware over a binary UART protocol.
+Python-based physics engine for Hardware-in-the-Loop simulation of the CubeSat ADCS. Communicates with STM32 firmware over binary UART protocol.
 
 ## Prerequisites
 
-*   [uv](https://github.com/astral-sh/uv) (for dependency management)
-*   Python 3.12+
+- [uv](https://github.com/astral-sh/uv) for dependency management
+- Python 3.10+
+- STM32 Nucleo-L476RG connected via USB
 
 ## Setup
 
-1.  **Install Dependencies**:
-    ```bash
-    uv sync
-    ```
-
-2.  **Configure Serial Port**:
-    Edit `simulation_host.py` and set `SERIAL_PORT` to your Nucleo's device path (e.g., `/dev/tty.usbmodem...` or `COM3`).
+```bash
+uv sync
+```
 
 ## Usage
 
-Run the simulation using `uv run`. You can select different waveform modes to verify the Nucleo's control loop.
-
-### 1. Step Response (Square Wave)
-Great for tuning PI gains.
+### Detumble Scenario
 ```bash
-uv run simulation_host.py --mode step --amp 0.05 --freq 0.5
+# Default: high initial tumble → firmware reduces angular velocity
+uv run simulation_host.py --scenario detumble --initial_omega 1.0 1.0 1.0
+
+# With debug output (prints ω, B-field, dipole moment)
+uv run simulation_host.py --scenario detumble --debug
+
+# With custom gains
+uv run simulation_host.py --scenario detumble --kbdot 500000.0
 ```
 
-### 2. Sine Wave
+### Pointing Scenario
 ```bash
-uv run simulation_host.py --mode sine --amp 0.05 --freq 1.0
+# 180° flip recovery test (starts anti-parallel to target)
+uv run simulation_host.py --scenario pointing --initial_omega 0.05 0.05 0.05
+
+# Custom PID gains
+uv run simulation_host.py --scenario pointing --kp 0.2 --kd 0.15
 ```
 
-### 3. Random Targets
+### Timing Options
 ```bash
-uv run simulation_host.py --mode random
+# Fast mode (default): 0.1s steps, ~10 min per orbit
+uv run simulation_host.py --scenario detumble
+
+# Realtime: 1.0s steps, 90 min per orbit
+uv run simulation_host.py --scenario detumble --realtime
+
+# Custom step size
+uv run simulation_host.py --scenario detumble --dt 0.05
+```
+
+### Other Flags
+```bash
+# Open loop (bypass PI controller: V = I·R)
+uv run simulation_host.py --open-loop
+
+# Finite duration (auto-terminates, prints final state)
+uv run simulation_host.py --scenario detumble --duration 120.0
+
+# Quiet mode (no console output)
+uv run simulation_host.py --quiet
 ```
 
 ## Protocol
-The host communicates using a packed binary struct (Little-endian):
-*   **Input (Host -> Firmware)**: `48 bytes`
-    *   `float current_amps` (Simulated Feedback)
-    *   `float gyro[3]` (Simulated Gyro)
-    *   `float mag[3]` (Simulated Mag)
-    *   `float quat[4]` (Simulated Orientation)
-    *   `float target_current_cmd` (Requested Setpoint)
-*   **Output (Firmware -> Host)**: `8 bytes`
-    *   `float command_voltage`
-    *   `float debug_val`
+
+Packed binary structs over UART at 115200 baud. Sync header: `0xB5 0x62`.
+
+### Host → Firmware (70 bytes)
+
+| Field | Type | Count | Description |
+|---|---|---|---|
+| Header | uint16 | 1 | `0x62B5` (appears as `B5 62` on wire) |
+| Currents | float32 | 3 | Simulated coil currents (A) |
+| Gyro | float32 | 3 | Angular velocity (rad/s) |
+| Mag | float32 | 3 | Body-frame B-field (T) |
+| Quaternion | float32 | 4 | Attitude (qw, qx, qy, qz) |
+| K_bdot | float32 | 1 | Runtime B-dot gain |
+| K_p | float32 | 1 | Runtime pointing P gain |
+| K_i | float32 | 1 | Runtime pointing I gain |
+| K_d | float32 | 1 | Runtime pointing D gain |
+| dt | float32 | 1 | Simulation step size (s) |
+| Debug flags | uint8 | 1 | Bit 0: open-loop mode |
+| Padding | uint8 | 3 | Alignment |
+
+### Firmware → Host (16 bytes)
+
+| Field | Type | Count | Description |
+|---|---|---|---|
+| Header | uint16 | 1 | `0x62B5` |
+| Voltage X | float32 | 1 | Commanded voltage (V) |
+| Voltage Y | float32 | 1 | Commanded voltage (V) |
+| Voltage Z | float32 | 1 | Commanded voltage (V) |
+| ADCS Mode | uint8 | 1 | 0=Detumble, 1=Spin, 2=Pointing |
+| Padding | uint8 | 3 | Alignment |
+
+## File Structure
+
+| File | Description |
+|---|---|
+| `physics.py` | Satellite dynamics, RK4 integrator with RL sub-stepping |
+| `simulation_host.py` | Main loop, CLI, scenario setup |
+| `comms.py` | Serial protocol (pack/unpack, sync) |
+| `telemetry.py` | Teleplot UDP + 3D cube visualization |

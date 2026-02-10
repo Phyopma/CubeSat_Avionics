@@ -49,9 +49,9 @@ void InnerLoop_Update(void)
 #ifdef MTQ_MODE_OPEN_LOOP
     // === MODE A: OPEN LOOP (Active) ===
     // Physics Model: V = I * R
-    state.command_voltage_x = state.target_current_x * MTQ_COIL_RESISTANCE;
-    state.command_voltage_y = state.target_current_y * MTQ_COIL_RESISTANCE;
-    state.command_voltage_z = state.target_current_z * MTQ_COIL_RESISTANCE;
+    state.command_voltage_x = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_x * MTQ_COIL_RESISTANCE));
+    state.command_voltage_y = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_y * MTQ_COIL_RESISTANCE));
+    state.command_voltage_z = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
 #ifdef SIMULATION_MODE
@@ -67,9 +67,9 @@ void InnerLoop_Update(void)
         if (sim_input.debug_flags & 0x01) {
             // === OPEN LOOP OVERRIDE (Debug) ===
             // Force V = I * R (Bypassing PI)
-            state.command_voltage_x = state.target_current_x * MTQ_COIL_RESISTANCE;
-            state.command_voltage_y = state.target_current_y * MTQ_COIL_RESISTANCE;
-            state.command_voltage_z = state.target_current_z * MTQ_COIL_RESISTANCE;
+            state.command_voltage_x = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_x * MTQ_COIL_RESISTANCE));
+            state.command_voltage_y = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_y * MTQ_COIL_RESISTANCE));
+            state.command_voltage_z = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_z * MTQ_COIL_RESISTANCE));
         } else {
             // === CLOSED LOOP (PI) ===
             state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);

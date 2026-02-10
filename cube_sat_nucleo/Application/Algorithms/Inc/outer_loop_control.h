@@ -34,7 +34,7 @@ typedef struct {
 } adcs_output_t;
 
 void OuterLoop_Init(void);
-void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output);
+void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float dt);
 void OuterLoop_SetMode(adcs_mode_t mode);
 adcs_mode_t OuterLoop_GetMode(void);
 

@@ -1,79 +1,120 @@
 # Implementation Stage 2: Control Algorithms (STM32 Firmware)
 
-**Goal:** Implement the "Brain" of the ADCS. This module takes sensor data and outputs current commands. It must switch between three distinct modes.
+**Goal:** Implement the ADCS state machine and control laws on the STM32. The outer loop determines the attitude mode and computes dipole requests; the inner loop drives magnetorquer currents accordingly.
 
-#### Data Structures
+**Status:** ✅ Complete (tuning ongoing)
 
-The control system requires a state machine struct:
+## State Machine
+
+```
+┌──────────────┐  ω < 0.03 rad/s  ┌──────────────┐
+│   DETUMBLE   │ ───────────────→ │   POINTING   │
+│   (B-dot)    │ ←─────────────── │    (PID)     │
+└──────────────┘  ω > 0.15 rad/s  └──────────────┘
+       │
+       ↓ (manual)
+┌──────────────┐
+│ SPIN STABLE  │
+│ (Y-axis spin)│
+└──────────────┘
+```
+
+Transitions are based on angular velocity magnitude (`Vec3_Norm(gyro)`) with hysteresis between 0.03 and 0.15 rad/s.
+
+## Data Structures
 
 ```c
 typedef enum {
-    CTRL_MODE_DETUMBLE,      // B-Dot
-    CTRL_MODE_SPIN_STABLE,   // Kane Damper
-    CTRL_MODE_POINTING       // Active Inertial Pointing
+    CTRL_MODE_DETUMBLE,     // B-Dot damping
+    CTRL_MODE_SPIN_STABLE,  // Y-axis spin-up
+    CTRL_MODE_POINTING      // Quaternion PID
 } adcs_mode_t;
 
 typedef struct {
     adcs_mode_t mode;
-    float k_bdot;            // Gain for Detumbling
-    float c_damp;            // Kane: Damping coefficient
-    float I_d;               // Kane: Virtual Inertia
-    float w_d[1];            // Kane: Virtual Damper State
-    float q_target[2];       // Pointing: Target Attitude
+    float k_bdot, c_damp, i_virtual;
+    float kp, ki, kd;
+    vec3_t integral_error;
+    quat_t q_target;       // Default: identity (nadir pointing)
 } adcs_control_t;
 ```
 
-#### Mode A: Detumbling (B-Dot)
+## Mode A: Detumbling (Gyro-Based B-Dot)
 
-* **Trigger:** Mission start or high angular rates ($|\omega| > 20^\circ/s$).
-* **Math:**
+**Algorithm:**
 
-   $$M = -k \dot{B}$$
+$$M = k_{bdot} \cdot (\omega \times B_{body})$$
 
-   * *Implementation Note:* Since we don't measure $\dot{B}$ directly, use discrete derivative: $\dot{B} \approx \frac{B_n - B_{n-1}}{\Delta t}$.
+- Uses gyro-estimated B-dot: $\dot{B}_{est} = \omega \times B$ (avoids noisy finite differencing)
+- Gain `K_BDOT = 200,000` ensures magnetorquer saturation for aggressive damping (positive sign required for correct damping)
+- **Singularity avoidance**: When $|\omega| > 0.1$ rad/s but $|\dot{B}_{est}| < 0.1 \cdot |\omega| \cdot |B|$, a kick (0.1 Am²) is applied on the axis **least aligned** with B to generate maximum torque
 
+**Sign convention note:** Verified HITL: positive `k_bdot` produces correct damping behavior. Previously suggested negative sign was incorrect for this coordinate system.
 
-* **Output:** Maximizes magnetic drag to stop rotation.
+## Mode B: Spin Stabilization
 
-#### Mode B: Spin Stabilization (Virtual Kane Damper)
+**Algorithm:** Simple Y-axis torque controller  
 
-* **Trigger:** Angular rates low, need to establish Gyroscopic Stiffness.
-* **Math (Virtual Integrator):**
+$$\tau_{req} = k_y \cdot (\omega_{target} - \omega_y) \cdot \hat{y}$$
 
-   $$\dot{w}_d = I_d^{-1} (\tau_{mag} \cdot \hat{z} - c_{damp} w_d)$$
+- Target: ω_y = 0.5 rad/s (≈30°/s), k_y = 0.1
+- Dipole projection: $M = \frac{B \times \tau_{req}}{|B|^2}$
 
-   * *Update:* Integrate this differential equation using RK4 or Trapezoidal method every loop cycle.
+## Mode C: Inertial Pointing (Quaternion PID)
 
+**Algorithm:**
 
-* **Math (Torque Request):**
+1. Compute target direction in body frame from quaternion:
+   ```
+   target_body = R(q)^T · [0, 0, 1]  (3rd column of DCM)
+   ```
 
-   $$\tau_{req} = -c_{damp} w_d \hat{z}$$
+2. Error vector: `e = body_z × target_body`
 
+3. **180° singularity check:** If `dot(body_z, target_body) < -0.999`, force `e = [0.1, 0, 0]` to break symmetry.
 
-* **Math (Dipole Projection):**
+4. PID torque request:
+   $$\tau_{req} = K_p \cdot e + K_i \cdot \int e \, dt - K_d \cdot \omega$$
+   - Integral anti-windup: clamped to `MAX_INTEGRAL_ERROR = 1.0` rad·s
 
-   $$M = \frac{1}{B^2} (\tau_{req} \times B)$$
+5. Magnetic projection:
+   $$M = \frac{B \times \tau_{req}}{|B|^2}$$
 
+## Pipeline: Outer Loop → Inner Loop → Actuators
 
+```
+OuterLoop_Update(sensors, &output, dt)
+    → output.dipole_request = {mx, my, mz}  [Am²]
 
-#### Mode C: Inertial Pointing (PD Controller)
+target_current = dipole_request * MTQ_DIPOLE_TO_AMP  [A]
+    → MTQ_DIPOLE_TO_AMP = 1/2.88  (datasheet: 2.88 Am²/A)
 
-* **Trigger:** Spin is stable, need to point Z-axis at Sun/Ground.
-* **Math (Error Quaternion):**
+InnerLoop_SetTargetCurrent(ix, iy, iz)
+    → PI_Update(&pi_x, target, measured) → command_voltage
 
-   $$q_{err} = q_{target}^{-1} * q_{current}$$
+HBridge_SetVoltage(axis, voltage, max_voltage)
+    → PWM output
+```
 
+## Key Configuration (`config.h`)
 
-* **Math (Control Law):**
+| Parameter | Value | Description |
+|---|---|---|
+| `K_BDOT` | 200,000 | B-dot gain (positive = damping) |
+| `K_P` | 0.100 | Pointing proportional |
+| `K_I` | 0.0001 | Pointing integral |
+| `K_D` | 0.100 | Pointing derivative |
+| `MAX_INTEGRAL_ERROR` | 1.0 | Anti-windup clamp |
+| `DETUMBLE_OMEGA_THRESH` | 0.03 rad/s | Mode transition |
+| `POINTING_OMEGA_THRESH` | 0.15 rad/s | Safety fallback |
+| `MTQ_DIPOLE_TO_AMP` | 1/2.88 | Dipole → current (datasheet) |
+| `PIL_MAX_VOLTAGE` | 3.3V | Supply voltage clamp (datasheet) |
 
-   $$\tau_{req} = -K_p q_{err}.v - K_d \omega$$
+## Deliverables
 
-   * *Note:* $K_d$ provides damping, $K_p$ provides the "spring" force to align axes.
-
-
-
-#### D. Deliverables
-
-* `outer_loop_control.c`: State machine and math implementations.
-* `math_lib.c`: Helper functions for Vector Cross Products, Quaternion Math, and Matrix multiplication.
-* `config.h`: Gain definitions ($K_p, K_d, c_{damp}$).
+| File | Description |
+|---|---|
+| `outer_loop_control.c` | State machine + B-dot, spin, pointing controllers |
+| `inner_loop_control.c` | PI current loop + HITL simulation support |
+| `math_lib.c` | Vector cross/dot/norm, quaternion rotation |
+| `config.h` | All tunable gains and thresholds |

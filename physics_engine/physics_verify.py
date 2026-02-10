@@ -16,7 +16,7 @@ if __name__ == "__main__":
     
     for i in range(steps + 1): # Correct calculation
         t = (i / steps) * t_orbit
-        B = sat.get_magnetic_field(t)
+        B = sat.get_magnetic_field_inertial(t)
         B_mag = np.linalg.norm(B)
         
         print(f"{t:8.1f} | {B[0]*1e6:6.1f} {B[1]*1e6:6.1f} {B[2]*1e6:6.1f} | {B_mag*1e6:5.1f}")

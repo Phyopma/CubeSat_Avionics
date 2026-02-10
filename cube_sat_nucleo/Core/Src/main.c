@@ -158,6 +158,7 @@ int main(void)
 
 // Global Flag for Main Context
 /* sim_packet_received_main is defined in global PV section */
+static float last_kbdot = -1.0f, last_kp = -1.0f, last_ki = -1.0f, last_kd = -1.0f;
 
 /* USER CODE END 2 */
 
@@ -191,13 +192,24 @@ while (1)
         adcs_in.orientation = (quat_t){sim_input.q_w, sim_input.q_x, sim_input.q_y, sim_input.q_z};
         
         // Dynamic Gains from Sim
-        OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.ki, sim_input.kd);
+        if (sim_input.k_bdot != last_kbdot || sim_input.kp != last_kp || 
+            sim_input.ki != last_ki || sim_input.kd != last_kd) {
+            OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.ki, sim_input.kd);
+            last_kbdot = sim_input.k_bdot;
+            last_kp = sim_input.kp;
+            last_ki = sim_input.ki;
+            last_kd = sim_input.kd;
+        }
 #else
         // TODO: Read from physical sensors (BNO085)
 #endif
 
         // 2. Run ADCS Algorithms
-        OuterLoop_Update(&adcs_in, &adcs_out);
+#ifdef SIMULATION_MODE
+        OuterLoop_Update(&adcs_in, &adcs_out, sim_input.dt);
+#else
+        OuterLoop_Update(&adcs_in, &adcs_out, 0.01f); // 100Hz default
+#endif
 
         // 3. Command the Inner Loop
         float target_x = adcs_out.dipole_request.x * MTQ_DIPOLE_TO_AMP;

@@ -17,8 +17,8 @@ typedef struct
 // #define MTQ_COIL_RESISTANCE 10.0f // Moved to config.h
 //#define HBRIDGE_SUPPLY_VOLTS 5.0f // Volts (Measure at VCC pin)
 // Hardware Constants for Tuning
-// When testing with 5V, max output is 5.0V
-#define MAX_OUTPUT_VOLTAGE 5.0f
+// Datasheet typical supply: 3.3V
+#define MAX_OUTPUT_VOLTAGE 3.3f
 
 // === API Functions ===
 void InnerLoop_Init(void);

@@ -21,66 +21,38 @@ class SatellitePhysics:
         self.state = np.zeros(10)
         self.state[0] = 1.0 # qw = 1.0
 
-    def get_magnetic_field(self, t):
-        # TILTED DIPOLE MODEL
-        # Earth's magnetic dipole is tilted ~11.7 deg from rotation axis
-        # Orbit inclination ~51.6 deg (ISS-like)
-        
-        # 1. Orbit Position (Circular)
-        # mean_motion: n = 2*pi / Period
-        # Period = 5400s (90 mins)
+    def get_magnetic_field_inertial(self, t):
+        # TILTED DIPOLE MODEL (Inertial Frame)
         n = 2 * np.pi / 5400.0
         theta_orbit = n * t
-        
-        # Position in Orbit Frame (Perifocal)
         r_orbit = np.array([np.cos(theta_orbit), np.sin(theta_orbit), 0])
-        
-        # 2. Rotate to Inertial Frame (ECI)
-        # Inclination i = 51.6 deg
         inc = np.radians(51.6)
-        # Rotation matrix for inclination (rotate around x-axis)
         R_inc = np.array([
             [1, 0, 0],
             [0, np.cos(inc), -np.sin(inc)],
             [0, np.sin(inc), np.cos(inc)]
         ])
         pos_eci = R_inc @ r_orbit
-        
-        # 3. Calculate Dipole Field in ECI
-        # Dipole tilt in ECI (simplified: rotates with Earth)
-        # Earth Rotation: omega_e = 2*pi / 86400
-        # Dipole tilt: epsilon = 11.7 deg
         omega_earth = 2 * np.pi / 86400.0
         theta_earth = omega_earth * t
         epsilon = np.radians(11.7)
-        
-        # Dipole unit vector (m_hat) in ECI
-        # m_hat rotates around Z_eci at omega_e, tilted by epsilon
         m_hat = np.array([
             np.sin(epsilon) * np.cos(theta_earth),
             np.sin(epsilon) * np.sin(theta_earth),
             np.cos(epsilon)
         ])
-        
-        # Dipole Field Equation: B(r) = (mu_0 / 4pi) * (3(m.r)r - m) / r^3
-        # Use normalized position for direction (r_hat = pos_eci)
-        # Amplitude factor B0 ~ 3.12e-5 T at equator (Re^3 / r^3 is approx constant for LEO)
-        # We'll use a reference magnitude of 50uT (5e-5 T) for scalar scaling
-        
         B0 = 5.0e-5
         r_hat = pos_eci
         m_dot_r = np.dot(m_hat, r_hat)
-        
         B_inertial = B0 * (3 * m_dot_r * r_hat - m_hat)
-        
-        # 4. Rotate into Body Frame: B_body = R_body_eci.T * B_inertial
-        q = self.state[0:4]
-        R_body_eci = self._quat_to_dcm(q)
-        B_body = R_body_eci.T @ B_inertial
-        
-        return B_body
+        return B_inertial
 
-    def dynamics(self, state, t, v_command, B_body):
+    def get_b_field(self, q, B_inertial):
+        # Rotate into Body Frame: B_body = R_body_eci.T * B_inertial
+        R_body_eci = self._quat_to_dcm(q)
+        return R_body_eci.T @ B_inertial
+
+    def dynamics(self, state, t, v_command, B_inertial):
         # Extract state [q0-3, w0-2, i0-2]
         q = state[0:4]
         w = state[4:7]
@@ -89,9 +61,9 @@ class SatellitePhysics:
         # 1. Attitude Kinematics
         Omega = np.array([
             [0, -w[0], -w[1], -w[2]],
-            [w[0], 0, w[2], -w[1]],
-            [w[1], -w[2], 0, w[0]],
-            [w[2], w[1], -w[0], 0]
+            [w[0], 0, -w[2], w[1]],
+            [w[1], w[2], 0, -w[0]],
+            [w[2], -w[1], w[0], 0]
         ])
         q_dot = 0.5 * Omega @ q
         
@@ -100,7 +72,8 @@ class SatellitePhysics:
         i_dot = (v_command - i * self.R) / self.L
         
         # 3. Magnetic Torque
-        m_actual = i * 5.76
+        B_body = self.get_b_field(q, B_inertial)
+        m_actual = i * 2.88  # Datasheet: 0.34 Am² @ 3.3V, R=28Ω → 2.88 Am²/A
         torque_mag = np.cross(m_actual, B_body)
         
         # 4. Rigid Body Dynamics
@@ -110,7 +83,10 @@ class SatellitePhysics:
         
         return np.concatenate((q_dot, w_dot, i_dot))
 
-    def rk4_step(self, t, dt, v_command, B_body):
+    def rk4_step(self, t, dt, v_command, B_inertial):
+        # 1. Physical Saturation: Clamp voltage to +/- 3.3V (datasheet typical supply)
+        v_command = np.clip(v_command, -3.3, 3.3)
+        
         # SUB-STEPPING: RL circuit needs ~0.5ms steps for stability at 28 ohms / 12mH
         # Calculate steps needed to keep sub_dt <= 0.5ms
         target_sub_dt = 0.0005
@@ -120,10 +96,10 @@ class SatellitePhysics:
         current_state = self.state.copy()
         
         for _ in range(n_sub):
-            k1 = self.dynamics(current_state, t, v_command, B_body)
-            k2 = self.dynamics(current_state + 0.5*sub_dt*k1, t + 0.5*sub_dt, v_command, B_body)
-            k3 = self.dynamics(current_state + 0.5*sub_dt*k2, t + 0.5*sub_dt, v_command, B_body)
-            k4 = self.dynamics(current_state + sub_dt*k3, t + sub_dt, v_command, B_body)
+            k1 = self.dynamics(current_state, t, v_command, B_inertial)
+            k2 = self.dynamics(current_state + 0.5*sub_dt*k1, t + 0.5*sub_dt, v_command, B_inertial)
+            k3 = self.dynamics(current_state + 0.5*sub_dt*k2, t + 0.5*sub_dt, v_command, B_inertial)
+            k4 = self.dynamics(current_state + sub_dt*k3, t + sub_dt, v_command, B_inertial)
             
             current_state = current_state + (sub_dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
             

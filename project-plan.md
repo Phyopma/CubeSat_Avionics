@@ -2,86 +2,92 @@
 trigger: always_on
 ---
 
-# GEMINI.md - CubeSat Avionics Context
+# GEMINI.md — CubeSat ADCS Project Context
 
 ## Project Overview
-This repository contains the Flight Software (FSW) for a CubeSat avionics system based on the **STM32 NUCLEO-L476RG**. The project focuses on Attitude Determination and Control Systems (ADCS) using magnetic actuation.
 
-**Key Hardware:**
-* **MCU:** STM32L476RG (ARM Cortex-M4)
-* **IMU:** BNO085 (9-DOF Absolute Orientation) via SPI/I2C
-* **Actuator Driver:** DRV8833 Dual H-Bridge (PWM controlled)
-* **Temperature Sensor:** PmodTMP2 (ADT7420) via I2C
-* **Magnetorquers:** Inductive coils for magnetic dipole generation
+Flight Software (FSW) and HITL simulation for a CubeSat ADCS using magnetorquer-only actuation on **STM32 NUCLEO-L476RG**.
+
+**Hardware:** STM32L476RG (Cortex-M4), BNO085 IMU (SPI), DRV8833 H-Bridge (PWM), ADT7420 Temp (I2C), Magnetorquer coils (R=28Ω, L=12–25mH).
+
+## Current Status
+
+### Completed
+- [x] **Inner Loop**: PI current controller at 1kHz — tracks ±95mA.
+- [x] **Outer Loop**: Full ADCS state machine with 3 modes (Detumble → Pointing, with safety fallback).
+- [x] **Physics Engine**: RK4 integrator with RL sub-stepping, tilted dipole B-field model, inertial/body frame separation.
+- [x] **HITL Framework**: Binary protocol over UART (115200 baud) with runtime gain tuning.
+- [x] **Telemetry**: Teleplot integration + 3D cube visualization.
+- [x] **Control Law Verification**: B-dot detumble, PID pointing with 180° singularity recovery.
+
+### In Progress / Known Issues
+- [ ] Refine B-dot polarity — positive `k_bdot` produces spin-up, negative produces damping. Root cause: possible coordinate mapping inversion between physics engine and firmware.
+- [ ] Spin Stabilization mode — basic implementation exists, needs tuning.
+- [ ] Sensor noise injection for robustness testing.
 
 ## Software Architecture
-The codebase is organized into layers to separate hardware dependencies from control logic:
 
-1.  **Core (HAL Layer):** STM32CubeMX generated code (`Core/Src`, `Core/Inc`) handling low-level peripherals (Timers, SPI, I2C, UART).
-2.  **Drivers (`Application/Drivers`):**
-    * `hbridge.c`: Low-level PWM abstraction for the DRV8833.
-    * `imu_bno085.c`: Interface for retrieving Quaternion, Mag, and Gyro data.
-    * `current_sensor.c`: Feedback mechanism for the inner control loop.
-3.  **Algorithms (`Application/Algorithms`):**
-    * `inner_loop_control.c`: PI Controller ensuring coil current matches commanded targets.
-    * `pi_controller.c`: Generic PI implementation.
+### Firmware (`cube_sat_nucleo/`)
 
-## Development Status
-* **Completed:**
-    * Basic peripheral drivers (I2C, SPI, UART).
-    * Inner Loop Control: Accurate current driving into magnetorquers using PI control.
-    * H-Bridge PWM generation and direction control.
-* **In Progress:**
-    * Outer Loop Control (B-Dot / Pointing Algorithms).
-    * Hardware-in-the-Loop (HITL) Simulation framework.
+| Layer | Key Files | Purpose |
+|---|---|---|
+| **Outer Loop** | `outer_loop_control.c`, `config.h` | ADCS mode selection + control laws |
+| **Inner Loop** | `inner_loop_control.c`, `pi_controller.c` | 1kHz current tracking |
+| **Drivers** | `hbridge.c`, `current_sensor.c`, `imu_bno085.c` | Hardware abstraction |
+| **Core** | `main.c`, `main.h` | HAL init, UART dispatch, packet structs |
+| **Math** | `math_lib.c` | `Vec3_Cross`, `Vec3_Norm`, quaternion ops |
 
----
+### Physics Engine (`physics_engine/`)
 
-## Roadmap & To-Do List
+| File | Purpose |
+|---|---|
+| `physics.py` | `SatellitePhysics` class: dynamics, kinematics, RK4, RL circuits |
+| `simulation_host.py` | Main loop, CLI args, scenario setup, telemetry dispatch |
+| `comms.py` | Binary packed serial protocol (sync header `0xB562`) |
+| `telemetry.py` | Teleplot UDP + 3D visualization sender |
 
-### Phase 1: Simulation Framework (HITL)
-The immediate goal is to close the feedback loop virtually, as the dev board cannot physically rotate in response to torque.
-- [ ] **A. Mathematical Model (Physics Engine)**
-    - [ ] Implement `physics.py` Class Structure.
-    - [ ] Implement Rigid Body Dynamics ($\dot{\omega} = I^{-1} (\tau - \omega \times I\omega)$).
-    - [ ] Implement Kinematics (Quaternion Integration $\dot{q} = 0.5 \Omega q$).
-    - [ ] Implement Environmental Model (Dipole Magnetic Field).
-- [ ] **B. Data Flow & Communications**
-    - [ ] Define Binary Packet Structure (PC <-> STM32).
-    - [ ] Implement `comms.py` for Serial I/O (handling synchronization).
-    - [ ] Create `simulation_host.py` Main Loop (RK4 Integration @ 10ms steps).
-- [ ] **C. Firmware Preparation (STM32)**
-    - [ ] Clean up `main.c`: Disable ad-hoc sensor tests.
-    - [ ] Verify `SIMULATION_MODE` hooks in `main.c` and `imu_bno085.c`.
-    - [ ] Ensure `InnerLoop` takes external torque/current commands.
-- [ ] **D. Verification**
-    - [ ] **Unit Test:** Verify Energy Conservation in `physics.py` (Torque-free motion).
-    - [ ] **Integration Test:** Loopback Comms Test (Send Data -> Receive Reply).
-    - [ ] **System Test:** Visual correctness in Teleplot (Simulated tumbling).
+### Control Modes
 
-### Phase 2: ADCS Algorithm Development
-- [ ] **Implement B-Dot Controller:**
-    - Calculate the derivative of the magnetic field vector.
-    - Generate dipole commands to oppose angular velocity (`m = -k * B_dot`).
-- [ ] **Implement Pointing Controller (Spin Stabilization):**
-    - Reference: "COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilization".
-    - Implement feedback linearization or simple PD control on the spin axis.
+```
+┌──────────┐   ω < 0.02 rad/s   ┌──────────┐
+│ DETUMBLE │ ─────────────────→ │ POINTING │
+│ (B-dot)  │ ←───────────────── │  (PID)   │
+└──────────┘   ω > 0.15 rad/s   └──────────┘
+       │
+       ↓ (manual)
+┌──────────────┐
+│ SPIN STABLE  │
+│ (Y-axis spin)│
+└──────────────┘
+```
 
-### Phase 3: Mission Logic
-- [ ] **State Machine:**
-    - Define modes: `DETUMBLE`, `ACQUISITION`, `NORMAL_OPS`, `SAFE_MODE`.
-    - Implement transitions based on angular rate thresholds (e.g., if `omega < 0.1 rad/s` -> transition to `NORMAL_OPS`).
+### Key Configuration (`config.h`)
 
----
+| Parameter | Value | Description |
+|---|---|---|
+| `K_BDOT` | 200000.0 | B-dot gain (ensures MTQ saturation) |
+| `K_P` | 0.100 | Pointing proportional gain |
+| `K_I` | 0.0001 | Pointing integral gain |
+| `K_D` | 0.100 | Pointing derivative gain |
+| `MTQ_DIPOLE_TO_AMP` | 1/5.76 | Dipole (Am²) → current (A) conversion |
+| `DETUMBLE_OMEGA_THRESH` | 0.02 rad/s | Transition to Pointing |
+| `POINTING_OMEGA_THRESH` | 0.15 rad/s | Fallback to Detumble |
 
-## References & Knowledge Base
+### HITL Protocol
 
-**Primary Control Algorithm Reference:**
-> **Title:** COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilization
-> **Authors:** Joshua Umansky-Castro et al. (Cornell University)
-> **Context:** Describes using a physics model to compute external magnetic field and angular velocity in place of sensor inputs to verify ACS algorithms on stationary hardware.
+**Input (Host → Firmware):** 70 bytes packed, `__attribute__((packed))`
+```
+[Header:u16][I_xyz:3f][ω_xyz:3f][B_xyz:3f][q_wxyz:4f][K_bdot:f][Kp:f][Ki:f][Kd:f][dt:f][flags:u8][pad:3x]
+```
 
-**Datasheets:**
-* **BNO085:** CEVA/Hillcrest Labs 9-Axis SiP (Reference for SPI readout and SHTP protocol).
-* **STM32H745ZI / STM32L476RG:** Reference for Timer/PWM and DMA configurations.
-* **DRV8833:** TI Dual H-Bridge Motor Driver (Reference for decay modes and current limits).
+**Output (Firmware → Host):** 16 bytes packed
+```
+[Header:u16][Vx:f][Vy:f][Vz:f][mode:u8][pad:3x]
+```
+
+## References
+
+- **COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilization** (Cornell University, Umansky-Castro et al.)
+- **BNO085** CEVA/Hillcrest Labs 9-Axis SiP
+- **DRV8833** TI Dual H-Bridge Motor Driver
+- **STM32L476RG** Reference Manual

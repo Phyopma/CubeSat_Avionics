@@ -34,13 +34,15 @@ def get_args():
                         help='Run simulation at 1x speed (90min orbit)')
     parser.add_argument('--open-loop', action='store_true',
                         help='Bypass PI controller on firmware (V=I*R)')
+    parser.add_argument('--dt', type=float,
+                        help='Physics step size in seconds (overrides realtime/fast defaults)')
     
     # Controller Gains (sent to firmware for runtime tuning)
-    parser.add_argument('--kbdot', type=float, default=1000000.0,
-                        help='B-dot gain for detumble mode')
+    parser.add_argument('--kbdot', type=float, default=-200000.0,
+                        help='B-dot gain for detumble mode (negative = damping)')
     parser.add_argument('--kp', type=float, default=0.100,
                         help='Proportional gain for pointing mode')
-    parser.add_argument('--ki', type=float, default=0.000,
+    parser.add_argument('--ki', type=float, default=0.0001,
                         help='Integral gain for pointing mode')
     parser.add_argument('--kd', type=float, default=0.100,
                         help='Derivative gain for pointing mode')
@@ -48,6 +50,8 @@ def get_args():
     # Hardware
     parser.add_argument('--port', type=str, default=SERIAL_PORT,
                         help='Serial port for Nucleo board')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable detailed physics debug logging')
     
     return parser.parse_args()
 
@@ -73,6 +77,10 @@ def main():
     else:  # pointing
         w_init = np.array([0.05, 0.05, 0.05])  # Low tumble for pointing
     sat.state[4:7] = w_init
+
+    if args.scenario == 'pointing':
+        # Start with a 180 degree flip (q = [0, 1, 0, 0]) to test singularity logic
+        sat.state[0:4] = np.array([0.0, 1.0, 0.0, 0.0])
     
     if not args.quiet:
         print(f"Scenario: {args.scenario}, Initial ω: {w_init}")
@@ -85,16 +93,25 @@ def main():
         print("Make sure the Nucleo board is connected and the port is correct.")
         sys.exit(1)
     
-    if not args.quiet:
-        print("Connected to firmware. Starting simulation...")
-    
+    # Determine time step
+    if args.dt:
+        dt_val = args.dt
+        if not args.quiet: print(f"Running with CUSTOM step size: {dt_val}s")
+    elif args.realtime:
+        dt_val = 1.0 
+        if not args.quiet: print("Running in REALTIME mode (1s step, 90min orbit)")
+    else:
+        dt_val = 0.1
+        if not args.quiet: print("Running in FAST mode (0.1s step, ~10 mins per orbit)")
+
     # Simulation state
     sim_time = 0.0
+    step_count = 0
     torque_applied = np.array([0.0, 0.0, 0.0])
     sat_currents = np.array([0.0, 0.0, 0.0])
     firmware_voltages = np.array([0.0, 0.0, 0.0])
     adcs_mode_id = 0
-    
+
     try:
         while True:
             # Check termination condition
@@ -107,34 +124,27 @@ def main():
                 print(f"FINAL_STATE: W={np.linalg.norm(w):.6f} rad/s | Err={angle_err:.6f} deg")
                 break
             
-            # Time step
-            # Realtime: 1.0s physics step (slow but precise enough for 90min)
-            # Fast: 0.1s physics step (10x speedup relative to orbit dynamics)
-            if args.realtime:
-                DT = 1.0 
-                if int(sim_time) == 0: print("Running in REALTIME mode (1s step, 90min orbit)")
-            else:
-                DT = 0.1
-                if int(sim_time) == 0: print("Running in FAST mode (0.1s step, ~10 mins per orbit)")
-            
+            DT = dt_val
             t_start = time.perf_counter()
             
             # Get environment state
-            B_body = sat.get_magnetic_field(sim_time)
+            B_inertial = sat.get_magnetic_field_inertial(sim_time)
             
             # Step physics forward
-            sat.rk4_step(sim_time, DT, firmware_voltages, B_body)
+            sat.rk4_step(sim_time, DT, firmware_voltages, B_inertial)
             
             q = sat.state[0:4]
             w = sat.state[4:7]
             sat_currents = sat.state[7:10]
             
-            # Current estimate for firmware (using physics state)
-            estimated_current = sat_currents.tolist()
+            # 5. Read Sensors (Post-Update to avoid skew)
+            B_body = sat.get_b_field(q, B_inertial)
             
-            # Send sensor data to firmware, receive commands
+            # 6. Send to Firmware
             debug_flags = 1 if args.open_loop else 0
-            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.ki, args.kd, debug_flags)
+            comms.send_packet(sat_currents.tolist(), w, B_body, q, 
+                             args.kbdot, args.kp, args.ki, args.kd, DT,
+                             debug_flags)
             response = comms.read_packet()
             
             if response:
@@ -144,12 +154,17 @@ def main():
                 # No response - firmware may be busy, keep last values
                 pass
             
-            # --- Telemetry (10Hz) ---
-            if not args.quiet and int(sim_time / DT) % 10 == 0:
+            # --- Telemetry (10Hz target) ---
+            # Send every 10 steps if DT=0.01 (100Hz), or every 1 step if DT=0.1 (10Hz)
+            # Calculate dynamic skip rate to keep telemetry ~10Hz
+            telemetry_skip = max(1, int(0.1 / DT))
+            
+            if not args.quiet and step_count % telemetry_skip == 0:
                 # Calculate torque for telemetry based on physics state current
-                m_actual = sat_currents * 5.76 # Stronger MTQ Factor
+                m_actual = sat_currents * 2.88 # Datasheet: 2.88 Am²/A
                 torque_applied = np.cross(m_actual, B_body)
-            if not args.quiet and int(sim_time / DT) % 10 == 0:
+            
+            if not args.quiet and step_count % telemetry_skip == 0:
                 qw, qx, qy, qz = q
                 dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))
                 angle_err = math.degrees(math.acos(dot))
@@ -177,10 +192,13 @@ def main():
                 stability_str = "DAMPING" if work_rate < 0 else "SPIN-UP"
                 
                 # Console output (1Hz)
-                if int(sim_time / DT) % 100 == 0:
+                if step_count % (telemetry_skip * 10) == 0:
                     print(f"t={sim_time:5.1f}s | Mode={m_str:10s} | W={np.linalg.norm(w):.3f} | Err={angle_err:5.1f}° | {stability_str} (P={work_rate:.2e}) | V={firmware_voltages}")
+                    if args.debug:
+                        print(f"  DEBUG: w={w} | B={B_body} | m={sat_currents * 2.88}")
             
             sim_time += DT
+            step_count += 1
             
             # Real-time pacing
             t_elapsed = time.perf_counter() - t_start
