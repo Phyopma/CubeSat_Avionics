@@ -17,7 +17,7 @@ from telemetry import TelemetryManager, VisualizerSender
 # --- Configuration ---
 SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
-DT = 0.01  # Physics step size = 10ms (100Hz)
+DT = 0.01  # Physics step size = 10ms (100Hz) - Default - Default - Default
 TELEPLOT_ADDR = ("teleplot.fr", 28011)
 
 def get_args():
@@ -30,15 +30,19 @@ def get_args():
                         help='Simulation duration in seconds (0 = infinite)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress console output')
+    parser.add_argument('--realtime', action='store_true',
+                        help='Run simulation at 1x speed (90min orbit)')
     parser.add_argument('--open-loop', action='store_true',
                         help='Bypass PI controller on firmware (V=I*R)')
     
     # Controller Gains (sent to firmware for runtime tuning)
-    parser.add_argument('--kbdot', type=float, default=5000000.0,
+    parser.add_argument('--kbdot', type=float, default=1000000.0,
                         help='B-dot gain for detumble mode')
-    parser.add_argument('--kp', type=float, default=0.010,
+    parser.add_argument('--kp', type=float, default=0.100,
                         help='Proportional gain for pointing mode')
-    parser.add_argument('--kd', type=float, default=0.300,
+    parser.add_argument('--ki', type=float, default=0.000,
+                        help='Integral gain for pointing mode')
+    parser.add_argument('--kd', type=float, default=0.100,
                         help='Derivative gain for pointing mode')
     
     # Hardware
@@ -54,7 +58,7 @@ def main():
     if not args.quiet:
         print("--- ADCS Simulation Host v3.0 (HITL) ---")
         print(f"Port: {args.port}")
-        print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_D={args.kd}")
+        print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_I={args.ki}, K_D={args.kd}")
     
     # Initialize components
     sat = SatellitePhysics()
@@ -103,23 +107,34 @@ def main():
                 print(f"FINAL_STATE: W={np.linalg.norm(w):.6f} rad/s | Err={angle_err:.6f} deg")
                 break
             
+            # Time step
+            # Realtime: 1.0s physics step (slow but precise enough for 90min)
+            # Fast: 0.1s physics step (10x speedup relative to orbit dynamics)
+            if args.realtime:
+                DT = 1.0 
+                if int(sim_time) == 0: print("Running in REALTIME mode (1s step, 90min orbit)")
+            else:
+                DT = 0.1
+                if int(sim_time) == 0: print("Running in FAST mode (0.1s step, ~10 mins per orbit)")
+            
             t_start = time.perf_counter()
             
             # Get environment state
             B_body = sat.get_magnetic_field(sim_time)
             
             # Step physics forward
-            sat.rk4_step(sim_time, DT, torque_applied)
+            sat.rk4_step(sim_time, DT, firmware_voltages, B_body)
             
             q = sat.state[0:4]
             w = sat.state[4:7]
+            sat_currents = sat.state[7:10]
             
-            # Current estimate from last voltage command (I = V/R)
+            # Current estimate for firmware (using physics state)
             estimated_current = sat_currents.tolist()
             
             # Send sensor data to firmware, receive commands
             debug_flags = 1 if args.open_loop else 0
-            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.kd, debug_flags)
+            comms.send_packet(estimated_current, w, B_body, q, args.kbdot, args.kp, args.ki, args.kd, debug_flags)
             response = comms.read_packet()
             
             if response:
@@ -129,23 +144,11 @@ def main():
                 # No response - firmware may be busy, keep last values
                 pass
             
-            # --- Actuator Physics ---
-            R_coil = 28.0  # MTQ coil resistance
-            V_batt = 5.0   # Battery voltage limit
-            
-            # Voltage limited by power system
-            v_applied = np.clip(firmware_voltages, -V_batt, V_batt)
-            
-            # Current from Ohm's law
-            sat_currents = v_applied / R_coil
-            
-            # Magnetic dipole (m = I * k, where k = 2.88 Am²/A)
-            m_actual = sat_currents * 2.88
-            
-            # Torque from Lorentz force (τ = m × B)
-            torque_applied = np.cross(m_actual, B_body)
-            
             # --- Telemetry (10Hz) ---
+            if not args.quiet and int(sim_time / DT) % 10 == 0:
+                # Calculate torque for telemetry based on physics state current
+                m_actual = sat_currents * 5.76 # Stronger MTQ Factor
+                torque_applied = np.cross(m_actual, B_body)
             if not args.quiet and int(sim_time / DT) % 10 == 0:
                 qw, qx, qy, qz = q
                 dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))

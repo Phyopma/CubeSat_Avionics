@@ -191,7 +191,7 @@ while (1)
         adcs_in.orientation = (quat_t){sim_input.q_w, sim_input.q_x, sim_input.q_y, sim_input.q_z};
         
         // Dynamic Gains from Sim
-        OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.kd);
+        OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.ki, sim_input.kd);
 #else
         // TODO: Read from physical sensors (BNO085)
 #endif

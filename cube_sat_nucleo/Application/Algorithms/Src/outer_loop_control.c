@@ -13,7 +13,9 @@ void OuterLoop_Init(void) {
     ctrl.c_damp = C_DAMP;
     ctrl.i_virtual = I_VIRTUAL;
     ctrl.kp = K_P;
+    ctrl.ki = K_I;
     ctrl.kd = K_D;
+    ctrl.integral_error = (vec3_t){0, 0, 0};
     ctrl.q_target = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
 }
 
@@ -25,10 +27,13 @@ adcs_mode_t OuterLoop_GetMode(void) {
     return ctrl.mode;
 }
 
-void OuterLoop_SetGains(float k_bdot, float kp, float kd) {
+void OuterLoop_SetGains(float k_bdot, float kp, float ki, float kd) {
     ctrl.k_bdot = k_bdot;
     ctrl.kp = kp;
+    ctrl.ki = ki;
     ctrl.kd = kd;
+    // Reset integral on gain change
+    ctrl.integral_error = (vec3_t){0, 0, 0};
 }
 
 static vec3_t Control_BDot(vec3_t B) {
@@ -79,11 +84,22 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
     vec3_t current_z = {0.0f, 0.0f, 1.0f};
     vec3_t err_vec = Vec3_Cross(current_z, target_body);
     
-    // PD Controller: tau = kp * err - kd * w
-    vec3_t tau_req = Vec3_Sub(
-        Vec3_ScalarMult(err_vec, ctrl.kp),
-        Vec3_ScalarMult(w, ctrl.kd)
-    );
+    // PID Controller: tau = kp * err + ki * int_err - kd * w
+    
+    // Update Integral Error with Anti-Windup
+    ctrl.integral_error = Vec3_Add(ctrl.integral_error, Vec3_ScalarMult(err_vec, dt));
+    
+    // Clamp Integral Error
+    float int_mag = Vec3_Norm(ctrl.integral_error);
+    if (int_mag > MAX_INTEGRAL_ERROR) {
+        ctrl.integral_error = Vec3_ScalarMult(ctrl.integral_error, MAX_INTEGRAL_ERROR / int_mag);
+    }
+    
+    vec3_t tau_p = Vec3_ScalarMult(err_vec, ctrl.kp);
+    vec3_t tau_i = Vec3_ScalarMult(ctrl.integral_error, ctrl.ki);
+    vec3_t tau_d = Vec3_ScalarMult(w, ctrl.kd);
+    
+    vec3_t tau_req = Vec3_Sub(Vec3_Add(tau_p, tau_i), tau_d);
     
     float B2 = Vec3_Dot(B, B);
     if (B2 < 1e-12f) return (vec3_t){0, 0, 0};

@@ -84,6 +84,7 @@ typedef struct __attribute__((packed)) {
     float q_w, q_x, q_y, q_z;
     float k_bdot;       // B-Dot Gain
     float kp;           // Pointing Proportional Gain
+    float ki;           // Pointing Integral Gain
     float kd;           // Pointing Derivative Gain
     uint8_t debug_flags; // Bit 0: Open Loop (Bypass PI)
     uint8_t padding[3];  // Align to 4-byte boundary

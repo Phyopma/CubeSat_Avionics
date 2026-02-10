@@ -12,35 +12,81 @@ class SatellitePhysics:
         self.I = np.diag([0.00833, 0.00833, 0.00333])
         self.I_inv = np.linalg.inv(self.I)
         
-        # 2. State Vector [q0, q1, q2, q3, wx, wy, wz]
-        # q = [scalar, vec_x, vec_y, vec_z] (matching BNO085 convention usually, check datasheet)
-        # Actually BNO085 provides [i, j, k, real] (vector first, then scalar), 
-        # BUT our struct convention in main.c/comms must match.
-        # Let's assume [qx, qy, qz, qw] for now, will confirm with BNO085 driver if needed.
-        # Physics engine usually uses [qw, qx, qy, qz]. Let's stick to scalar-first internally.
-        self.state = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) 
+        # 2. Magnetorquer Characteristics (from mtq-power-char.png)
+        self.R = 28.0  # Ohms
+        self.L = np.array([0.025, 0.025, 0.012]) # XY: 25mH, Z: 12mH (averages)
+        
+        # 3. State Vector [q0, q1, q2, q3, wx, wy, wz, ix, iy, iz]
+        # q = [qw, qx, qy, qz], w = [wx, wy, wz], i = current in Amps
+        self.state = np.zeros(10)
+        self.state[0] = 1.0 # qw = 1.0
 
     def get_magnetic_field(self, t):
-        # Simple rotating magnetic field vector (Earth-like magnitude ~50uT)
-        # Orbit period ~ 90 mins = 5400s
-        # Omega_orbit = 2*pi / 5400
-        # Accelerated orbit for fast tuning (60s period)
-        angle = (2 * np.pi / 5400.0) * t
-        B_inertial = 50e-6 * np.array([np.cos(angle), 0.0, np.sin(angle)])
+        # TILTED DIPOLE MODEL
+        # Earth's magnetic dipole is tilted ~11.7 deg from rotation axis
+        # Orbit inclination ~51.6 deg (ISS-like)
         
-        # Rotate into Body Frame: B_body = R.T * B_inertial (since R is Body->Inertial)
+        # 1. Orbit Position (Circular)
+        # mean_motion: n = 2*pi / Period
+        # Period = 5400s (90 mins)
+        n = 2 * np.pi / 5400.0
+        theta_orbit = n * t
+        
+        # Position in Orbit Frame (Perifocal)
+        r_orbit = np.array([np.cos(theta_orbit), np.sin(theta_orbit), 0])
+        
+        # 2. Rotate to Inertial Frame (ECI)
+        # Inclination i = 51.6 deg
+        inc = np.radians(51.6)
+        # Rotation matrix for inclination (rotate around x-axis)
+        R_inc = np.array([
+            [1, 0, 0],
+            [0, np.cos(inc), -np.sin(inc)],
+            [0, np.sin(inc), np.cos(inc)]
+        ])
+        pos_eci = R_inc @ r_orbit
+        
+        # 3. Calculate Dipole Field in ECI
+        # Dipole tilt in ECI (simplified: rotates with Earth)
+        # Earth Rotation: omega_e = 2*pi / 86400
+        # Dipole tilt: epsilon = 11.7 deg
+        omega_earth = 2 * np.pi / 86400.0
+        theta_earth = omega_earth * t
+        epsilon = np.radians(11.7)
+        
+        # Dipole unit vector (m_hat) in ECI
+        # m_hat rotates around Z_eci at omega_e, tilted by epsilon
+        m_hat = np.array([
+            np.sin(epsilon) * np.cos(theta_earth),
+            np.sin(epsilon) * np.sin(theta_earth),
+            np.cos(epsilon)
+        ])
+        
+        # Dipole Field Equation: B(r) = (mu_0 / 4pi) * (3(m.r)r - m) / r^3
+        # Use normalized position for direction (r_hat = pos_eci)
+        # Amplitude factor B0 ~ 3.12e-5 T at equator (Re^3 / r^3 is approx constant for LEO)
+        # We'll use a reference magnitude of 50uT (5e-5 T) for scalar scaling
+        
+        B0 = 5.0e-5
+        r_hat = pos_eci
+        m_dot_r = np.dot(m_hat, r_hat)
+        
+        B_inertial = B0 * (3 * m_dot_r * r_hat - m_hat)
+        
+        # 4. Rotate into Body Frame: B_body = R_body_eci.T * B_inertial
         q = self.state[0:4]
-        R = self._quat_to_dcm(q)
-        B_body = R.T @ B_inertial
+        R_body_eci = self._quat_to_dcm(q)
+        B_body = R_body_eci.T @ B_inertial
+        
         return B_body
 
-    def dynamics(self, state, t, torque_ext_body):
-        # Extract state
-        q = state[0:4] # quaternion [w, x, y, z]
-        w = state[4:7] # angular velocity [x, y, z]
+    def dynamics(self, state, t, v_command, B_body):
+        # Extract state [q0-3, w0-2, i0-2]
+        q = state[0:4]
+        w = state[4:7]
+        i = state[7:10]
         
-        # 1. Attitude Kinematics (q_dot = 0.5 * Omega * q)
-        # Omega matrix for [w, x, y, z] convention
+        # 1. Attitude Kinematics
         Omega = np.array([
             [0, -w[0], -w[1], -w[2]],
             [w[0], 0, w[2], -w[1]],
@@ -49,54 +95,58 @@ class SatellitePhysics:
         ])
         q_dot = 0.5 * Omega @ q
         
-        # 2. Rigid Body Dynamics (Euler's Equation)
-        # I * w_dot + w x (I * w) = torque
-        # w_dot = I_inv * (torque - w x (I * w))
+        # 2. MTQ Current Dynamics (dI/dt = (V - IR) / L)
+        # Using 5.76 Am^2/A factor from "stronger" hardware update
+        i_dot = (v_command - i * self.R) / self.L
         
-        # Gyroscopic term
+        # 3. Magnetic Torque
+        m_actual = i * 5.76
+        torque_mag = np.cross(m_actual, B_body)
+        
+        # 4. Rigid Body Dynamics
         Iw = self.I @ w
         gyroscopic = np.cross(w, Iw)
+        w_dot = self.I_inv @ (torque_mag - gyroscopic)
         
-        w_dot = self.I_inv @ (torque_ext_body - gyroscopic)
+        return np.concatenate((q_dot, w_dot, i_dot))
+
+    def rk4_step(self, t, dt, v_command, B_body):
+        # SUB-STEPPING: RL circuit needs ~0.5ms steps for stability at 28 ohms / 12mH
+        # Calculate steps needed to keep sub_dt <= 0.5ms
+        target_sub_dt = 0.0005
+        n_sub = max(1, int(math.ceil(dt / target_sub_dt)))
+        sub_dt = dt / n_sub
         
-        # Divergence Safety
-        if np.linalg.norm(w_dot) > 1e12:
-            w_dot = np.zeros(3)
-
-        return np.concatenate((q_dot, w_dot))
-
-    def rk4_step(self, t, dt, torque_ext):
-        # RK4 Integration
-        k1 = self.dynamics(self.state, t, torque_ext)
-        k2 = self.dynamics(self.state + 0.5*dt*k1, t + 0.5*dt, torque_ext)
-        k3 = self.dynamics(self.state + 0.5*dt*k2, t + 0.5*dt, torque_ext)
-        k4 = self.dynamics(self.state + dt*k3, t + dt, torque_ext)
+        current_state = self.state.copy()
         
-        new_state = self.state + (dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        for _ in range(n_sub):
+            k1 = self.dynamics(current_state, t, v_command, B_body)
+            k2 = self.dynamics(current_state + 0.5*sub_dt*k1, t + 0.5*sub_dt, v_command, B_body)
+            k3 = self.dynamics(current_state + 0.5*sub_dt*k2, t + 0.5*sub_dt, v_command, B_body)
+            k4 = self.dynamics(current_state + sub_dt*k3, t + sub_dt, v_command, B_body)
+            
+            current_state = current_state + (sub_dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
+            
+            # Normalize Quaternion every sub-step to prevent drift
+            q_norm = np.linalg.norm(current_state[0:4])
+            if q_norm > 1e-6:
+                current_state[0:4] /= q_norm
+            else:
+                current_state[0:4] = np.array([1.0, 0.0, 0.0, 0.0])
         
-        # Check for NaNs
-        if np.isnan(new_state).any():
-            print(f"NAN DETECTED in RK4! Resetting state subset.")
-            # Don't apply the NaN state. 
-            # Ideally we should debug why it happened, but for now prevent crash loop.
-            return
+        # FINAL SAFETY: Check for exploded values (NaN/Inf)
+        if not np.isfinite(current_state).all():
+            print("WARNING: Physics diverged! Stabilizing current...")
+            current_state[7:10] = np.zeros(3)
+            current_state = np.nan_to_num(current_state, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        # Normalize Quaternion
-        q_norm = np.linalg.norm(new_state[0:4])
-        if q_norm > 1e-6:
-            new_state[0:4] /= q_norm
-        else:
-            new_state[0:4] = np.array([1.0, 0.0, 0.0, 0.0])
-
-        # Clamp Angular Velocity (Safety)
-        # 100 rad/s is already insane, but prevents float32 overflow
-        new_state[4:7] = np.clip(new_state[4:7], -500.0, 500.0)
-
-        self.state = new_state
+        # Clip values for float32 / protocol safety
+        current_state[4:7] = np.clip(current_state[4:7], -100.0, 100.0)
+        current_state[7:10] = np.clip(current_state[7:10], -1.0, 1.0) 
+        
+        self.state = current_state
 
     def _quat_to_dcm(self, q):
-        # Convert quaternion to Direction Cosine Matrix (Body to Inertial)
-        # q = [w, x, y, z]
         w, x, y, z = q
         return np.array([
             [1 - 2*y**2 - 2*z**2, 2*x*y - 2*z*w,     2*x*z + 2*y*w],
