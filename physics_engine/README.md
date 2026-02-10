@@ -37,6 +37,26 @@ uv run simulation_host.py --mode sine --amp 0.05 --freq 1.0
 uv run simulation_host.py --mode random
 ```
 
+### 4. PI Auto-Tuning (physics-guided sweep)
+Run the offline tuner to search stable/fast PI gains for the RL current plant model:
+```bash
+uv run tune_params.py
+```
+
+Recommended two-stage sweep:
+```bash
+# Broad sweep
+uv run tune_params.py --omega-min 8 --omega-max 90 --omega-steps 70 --alpha-min 0.5 --alpha-max 1.8 --alpha-steps 65
+
+# Refinement near best region
+uv run tune_params.py --omega-min 80 --omega-max 110 --omega-steps 121 --alpha-min 1.0 --alpha-max 1.25 --alpha-steps 121 --top 10
+```
+
+Recent best candidate from refinement (for default R/L model):
+- `Kp = 55.0`
+- `Ki = 2979.17`
+
+
 ## Protocol
 The host communicates using a packed binary struct (Little-endian):
 *   **Input (Host -> Firmware)**: `48 bytes`
