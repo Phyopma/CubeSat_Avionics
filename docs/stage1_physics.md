@@ -12,7 +12,7 @@ $$\dot{\omega} = I^{-1} (\tau_{mag} - \omega \times I\omega)$$
 
 - $I$: Diagonal inertia tensor for a 2U CubeSat
 - $\tau_{mag} = m \times B_{body}$: Torque from magnetorquer dipole crossed with local B-field
-- $m = I_{coil} \times 5.76$: Effective magnetic dipole moment (Am²)
+- $m = I_{coil} \times 2.88$: Effective magnetic dipole moment (Am²)
 
 ### 2. Quaternion Kinematics
 
@@ -56,7 +56,7 @@ state = [q_w, q_x, q_y, q_z, ω_x, ω_y, ω_z, i_x, i_y, i_z]
 
 1. **Inertial/Body frame separation**: B-field is computed in inertial frame once per outer step, then rotated to body frame inside each RK4 sub-step using the current quaternion. This significantly improves accuracy at large time steps.
 2. **Sub-stepping**: Rather than shrinking the global step size, only the stiff RL dynamics are sub-stepped. Attitude dynamics are stable at 0.1s steps.
-3. **Voltage clamping**: Applied before integration to match real H-bridge limits (±5V).
+3. **Voltage clamping**: Applied before integration to match real H-bridge limits (±3.3V).
 
 ## Deliverables
 

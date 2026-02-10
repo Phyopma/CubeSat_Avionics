@@ -2,6 +2,7 @@
 #define OUTER_LOOP_CONTROL_H
 
 #include "math_lib.h"
+#include <stdint.h>
 
 typedef enum {
     CTRL_MODE_IDLE,
@@ -19,7 +20,7 @@ typedef struct {
     float ki;               // Integral Gain
     float kd;               // Derivative Gain
     vec3_t integral_error;  // Integrated error state
-    float w_damper;         // Scalar virtual damper state
+    vec3_t w_damper;        // Virtual damper angular rate state
     quat_t q_target;
 } adcs_control_t;
 
@@ -37,6 +38,9 @@ void OuterLoop_Init(void);
 void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float dt);
 void OuterLoop_SetMode(adcs_mode_t mode);
 adcs_mode_t OuterLoop_GetMode(void);
+void OuterLoop_SetForcedMode(uint8_t force_mode_code);
+void OuterLoop_ResetControllerState(void);
+void OuterLoop_SetSpinParams(float c_damp, float i_virtual);
 
 /**
  * @brief Update control gains dynamically (e.g. from telemetry/sim)

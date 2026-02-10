@@ -25,8 +25,9 @@ Transitions are based on angular velocity magnitude (`Vec3_Norm(gyro)`) with hys
 
 ```c
 typedef enum {
+    CTRL_MODE_IDLE,
     CTRL_MODE_DETUMBLE,     // B-Dot damping
-    CTRL_MODE_SPIN_STABLE,  // Y-axis spin-up
+    CTRL_MODE_SPIN_STABLE,  // Kane virtual damper
     CTRL_MODE_POINTING      // Quaternion PID
 } adcs_mode_t;
 
@@ -35,6 +36,7 @@ typedef struct {
     float k_bdot, c_damp, i_virtual;
     float kp, ki, kd;
     vec3_t integral_error;
+    vec3_t w_damper;
     quat_t q_target;       // Default: identity (nadir pointing)
 } adcs_control_t;
 ```
@@ -51,14 +53,18 @@ $$M = k_{bdot} \cdot (\omega \times B_{body})$$
 
 **Sign convention note:** Verified HITL: positive `k_bdot` produces correct damping behavior. Previously suggested negative sign was incorrect for this coordinate system.
 
-## Mode B: Spin Stabilization
+## Mode B: Spin Stabilization (Virtual Kane Damper)
 
-**Algorithm:** Simple Y-axis torque controller  
+**Algorithm:** virtual viscous damper + magnetic torque projection
 
-$$\tau_{req} = k_y \cdot (\omega_{target} - \omega_y) \cdot \hat{y}$$
+$$\tau_d = c_{damp}(\omega - \omega_d)$$
+$$\dot{\omega}_d = \frac{c_{damp}}{I_d}(\omega - \omega_d)$$
+$$\tau_{req} = -\operatorname{Proj}_{\perp B}(\tau_d)$$
+$$M = \frac{B \times \tau_{req}}{|B|^2}$$
 
-- Target: ω_y = 0.5 rad/s (≈30°/s), k_y = 0.1
-- Dipole projection: $M = \frac{B \times \tau_{req}}{|B|^2}$
+- `c_damp`: virtual damping coefficient
+- `i_virtual (I_d)`: virtual damper inertia
+- `w_damper`: internal virtual damper angular-rate state
 
 ## Mode C: Inertial Pointing (Quaternion PID)
 
@@ -101,6 +107,8 @@ HBridge_SetVoltage(axis, voltage, max_voltage)
 | Parameter | Value | Description |
 |---|---|---|
 | `K_BDOT` | 200,000 | B-dot gain (positive = damping) |
+| `C_DAMP` | 0.05 | Kane virtual damping coefficient |
+| `I_VIRTUAL` | 0.01 | Kane virtual damper inertia |
 | `K_P` | 0.100 | Pointing proportional |
 | `K_I` | 0.0001 | Pointing integral |
 | `K_D` | 0.100 | Pointing derivative |

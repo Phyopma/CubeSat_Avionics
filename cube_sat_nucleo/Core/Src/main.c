@@ -159,6 +159,9 @@ int main(void)
 // Global Flag for Main Context
 /* sim_packet_received_main is defined in global PV section */
 static float last_kbdot = -1.0f, last_kp = -1.0f, last_ki = -1.0f, last_kd = -1.0f;
+static float last_c_damp = -1.0f, last_i_virtual = -1.0f;
+static uint8_t last_force_mode = 0xFF;
+static uint8_t last_reset_request = 0;
 
 /* USER CODE END 2 */
 
@@ -190,10 +193,33 @@ while (1)
         adcs_in.mag_field = (vec3_t){sim_input.mag_x, sim_input.mag_y, sim_input.mag_z};
         adcs_in.gyro = (vec3_t){sim_input.gyro_x, sim_input.gyro_y, sim_input.gyro_z};
         adcs_in.orientation = (quat_t){sim_input.q_w, sim_input.q_x, sim_input.q_y, sim_input.q_z};
-        
+
+        uint8_t force_mode = (sim_input.debug_flags >> 1) & 0x03;
+        uint8_t reset_request = (sim_input.debug_flags >> 3) & 0x01;
+        if (force_mode != last_force_mode) {
+            OuterLoop_SetForcedMode(force_mode);
+            last_force_mode = force_mode;
+        }
+        if (reset_request && !last_reset_request) {
+            OuterLoop_ResetControllerState();
+        }
+        last_reset_request = reset_request;
+
         // Dynamic Gains from Sim
-        if (sim_input.k_bdot != last_kbdot || sim_input.kp != last_kp || 
-            sim_input.ki != last_ki || sim_input.kd != last_kd) {
+        if (force_mode == 2) {
+            // Forced SPIN mode reuses kp/kd fields for Kane parameters
+            // without changing packet size.
+            if (sim_input.kp != last_c_damp || sim_input.kd != last_i_virtual) {
+                OuterLoop_SetSpinParams(sim_input.kp, sim_input.kd);
+                last_c_damp = sim_input.kp;
+                last_i_virtual = sim_input.kd;
+            }
+            last_kbdot = sim_input.k_bdot;
+            last_kp = sim_input.kp;
+            last_ki = sim_input.ki;
+            last_kd = sim_input.kd;
+        } else if (sim_input.k_bdot != last_kbdot || sim_input.kp != last_kp ||
+                   sim_input.ki != last_ki || sim_input.kd != last_kd) {
             OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.ki, sim_input.kd);
             last_kbdot = sim_input.k_bdot;
             last_kp = sim_input.kp;

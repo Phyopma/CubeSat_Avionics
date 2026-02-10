@@ -3,8 +3,9 @@
 #include <string.h>
 
 static adcs_control_t ctrl;
-static vec3_t last_mag_field = {0, 0, 0};
 static float dt = 0.01f; // 100Hz outer loop
+static uint8_t force_mode_enabled = 0;
+static adcs_mode_t forced_mode = CTRL_MODE_DETUMBLE;
 
 void OuterLoop_Init(void) {
     memset(&ctrl, 0, sizeof(ctrl));
@@ -16,15 +17,65 @@ void OuterLoop_Init(void) {
     ctrl.ki = K_I;
     ctrl.kd = K_D;
     ctrl.integral_error = (vec3_t){0, 0, 0};
+    ctrl.w_damper = (vec3_t){0, 0, 0};
     ctrl.q_target = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
+    force_mode_enabled = 0;
+    forced_mode = CTRL_MODE_DETUMBLE;
 }
 
 void OuterLoop_SetMode(adcs_mode_t mode) {
+    if (ctrl.mode != mode && mode == CTRL_MODE_SPIN_STABLE) {
+        ctrl.w_damper = (vec3_t){0, 0, 0};
+    }
     ctrl.mode = mode;
 }
 
 adcs_mode_t OuterLoop_GetMode(void) {
     return ctrl.mode;
+}
+
+void OuterLoop_SetForcedMode(uint8_t force_mode_code) {
+    if (force_mode_code == 0) {
+        force_mode_enabled = 0;
+        return;
+    }
+
+    force_mode_enabled = 1;
+    switch (force_mode_code) {
+        case 1:
+            forced_mode = CTRL_MODE_DETUMBLE;
+            break;
+        case 2:
+            forced_mode = CTRL_MODE_SPIN_STABLE;
+            ctrl.w_damper = (vec3_t){0, 0, 0};
+            break;
+        case 3:
+            forced_mode = CTRL_MODE_POINTING;
+            break;
+        default:
+            force_mode_enabled = 0;
+            return;
+    }
+
+    ctrl.mode = forced_mode;
+}
+
+void OuterLoop_ResetControllerState(void) {
+    ctrl.integral_error = (vec3_t){0, 0, 0};
+    ctrl.w_damper = (vec3_t){0, 0, 0};
+
+    // Reset to a deterministic baseline mode unless an explicit override is active.
+    if (force_mode_enabled) {
+        ctrl.mode = forced_mode;
+    } else {
+        ctrl.mode = CTRL_MODE_DETUMBLE;
+    }
+}
+
+void OuterLoop_SetSpinParams(float c_damp, float i_virtual) {
+    ctrl.c_damp = fmaxf(c_damp, 1e-6f);
+    ctrl.i_virtual = fmaxf(i_virtual, 1e-6f);
+    ctrl.w_damper = (vec3_t){0, 0, 0};
 }
 
 void OuterLoop_SetGains(float k_bdot, float kp, float ki, float kd) {
@@ -73,16 +124,34 @@ static vec3_t Control_BDot(vec3_t B, vec3_t w) {
 }
 
 static vec3_t Control_SpinStabilization(vec3_t B, vec3_t w) {
-    // Simple Y-Axis Spin-up: Command torque to reach a target rate.
-    float target_wy = 0.5f; // rad/s (approx 30 deg/s)
-    float ky = 0.1f;
-    
-    vec3_t tau_req = {0.0f, ky * (target_wy - w.y), 0.0f};
-    
+    // Virtual Kane Damper:
+    // tau_d = c * (w_body - w_damper)
+    // tau_req = -Proj_perp_B(tau_d), then map to dipole via m = (B x tau_req) / |B|^2
     float B2 = Vec3_Dot(B, B);
     if (B2 < 1e-12f) return (vec3_t){0, 0, 0};
-    
-    // Magnetic Control Law: M = (B x tau) / |B|^2
+
+    float inv_b_mag = 1.0f / sqrtf(B2);
+    vec3_t b_hat = Vec3_ScalarMult(B, inv_b_mag);
+
+    vec3_t rel_w = Vec3_Sub(w, ctrl.w_damper);
+    vec3_t tau_d = Vec3_ScalarMult(rel_w, ctrl.c_damp);
+
+    // Project tau_d onto plane normal to B, then negate for dissipative action.
+    float tau_parallel = Vec3_Dot(tau_d, b_hat);
+    vec3_t tau_perp = Vec3_Sub(tau_d, Vec3_ScalarMult(b_hat, tau_parallel));
+    vec3_t tau_req = Vec3_ScalarMult(tau_perp, -1.0f);
+
+    // Damper state: I_d * w_d_dot = c * (w - w_damper)
+    float gain = ctrl.c_damp / fmaxf(ctrl.i_virtual, 1e-6f);
+    vec3_t w_d_dot = Vec3_ScalarMult(rel_w, gain);
+    ctrl.w_damper = Vec3_Add(ctrl.w_damper, Vec3_ScalarMult(w_d_dot, dt));
+
+    // Guard against numerical blow-up from invalid parameter injections.
+    float wd_mag = Vec3_Norm(ctrl.w_damper);
+    if (wd_mag > 10.0f) {
+        ctrl.w_damper = Vec3_ScalarMult(ctrl.w_damper, 10.0f / wd_mag);
+    }
+
     return Vec3_ScalarMult(Vec3_Cross(B, tau_req), 1.0f / B2);
 }
 
@@ -135,6 +204,11 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
 }
 
 static void Update_State_Machine(adcs_sensor_input_t *input) {
+    if (force_mode_enabled) {
+        ctrl.mode = forced_mode;
+        return;
+    }
+
     float omega_norm = Vec3_Norm(input->gyro);
 
     switch (ctrl.mode) {

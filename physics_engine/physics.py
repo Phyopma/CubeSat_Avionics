@@ -68,7 +68,6 @@ class SatellitePhysics:
         q_dot = 0.5 * Omega @ q
         
         # 2. MTQ Current Dynamics (dI/dt = (V - IR) / L)
-        # Using 5.76 Am^2/A factor from "stronger" hardware update
         i_dot = (v_command - i * self.R) / self.L
         
         # 3. Magnetic Torque

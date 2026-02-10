@@ -26,6 +26,9 @@ uv run simulation_host.py --scenario detumble --debug
 
 # With custom gains
 uv run simulation_host.py --scenario detumble --kbdot 500000.0
+
+# Force a specific STM32 outer-loop mode (bypass state machine)
+uv run simulation_host.py --scenario detumble --force-mode detumble
 ```
 
 ### Pointing Scenario
@@ -54,12 +57,22 @@ uv run simulation_host.py --scenario detumble --dt 0.05
 # Open loop (bypass PI controller: V = I·R)
 uv run simulation_host.py --open-loop
 
+# Request deterministic controller state reset at start (default on)
+uv run simulation_host.py --reset-controller
+
+# Disable start-of-run reset request
+uv run simulation_host.py --no-reset-controller
+
 # Finite duration (auto-terminates, prints final state)
 uv run simulation_host.py --scenario detumble --duration 120.0
 
 # Quiet mode (no console output)
 uv run simulation_host.py --quiet
 ```
+
+When `--duration` is set, the host prints:
+- `FINAL_STATE: W=... | Err=...`
+- `FINAL_METRICS: Mode=... Dwell=... ForcedDwell=... Sat=... Transitions=... Tsettle=...`
 
 ## Protocol
 
@@ -79,7 +92,7 @@ Packed binary structs over UART at 115200 baud. Sync header: `0xB5 0x62`.
 | K_i | float32 | 1 | Runtime pointing I gain |
 | K_d | float32 | 1 | Runtime pointing D gain |
 | dt | float32 | 1 | Simulation step size (s) |
-| Debug flags | uint8 | 1 | Bit 0: open-loop mode |
+| Debug flags | uint8 | 1 | Bit 0: open-loop, Bits 1-2: force mode (`00` auto, `01` detumble, `10` spin, `11` pointing), Bit 3: controller reset request |
 | Padding | uint8 | 3 | Alignment |
 
 ### Firmware → Host (16 bytes)
@@ -90,7 +103,7 @@ Packed binary structs over UART at 115200 baud. Sync header: `0xB5 0x62`.
 | Voltage X | float32 | 1 | Commanded voltage (V) |
 | Voltage Y | float32 | 1 | Commanded voltage (V) |
 | Voltage Z | float32 | 1 | Commanded voltage (V) |
-| ADCS Mode | uint8 | 1 | 0=Detumble, 1=Spin, 2=Pointing |
+| ADCS Mode | uint8 | 1 | 0=Idle, 1=Detumble, 2=Spin, 3=Pointing |
 | Padding | uint8 | 3 | Alignment |
 
 ## File Structure

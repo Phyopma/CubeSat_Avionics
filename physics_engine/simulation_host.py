@@ -18,7 +18,7 @@ from telemetry import TelemetryManager, VisualizerSender
 SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz) - Default - Default - Default
-TELEPLOT_ADDR = ("teleplot.fr", 28011)
+TELEPLOT_ADDR = ("teleplot.fr", 32533)
 
 def get_args():
     parser = argparse.ArgumentParser(description='ADCS Simulation Host (HITL Only)')
@@ -34,17 +34,21 @@ def get_args():
                         help='Run simulation at 1x speed (90min orbit)')
     parser.add_argument('--open-loop', action='store_true',
                         help='Bypass PI controller on firmware (V=I*R)')
+    parser.add_argument('--force-mode', choices=['auto', 'detumble', 'spin', 'pointing'], default='auto',
+                        help='Force STM32 outer-loop mode (auto keeps firmware state machine)')
+    parser.add_argument('--reset-controller', action=argparse.BooleanOptionalAction, default=True,
+                        help='Request one-shot outer-loop state reset at run start (default: enabled)')
     parser.add_argument('--dt', type=float,
                         help='Physics step size in seconds (overrides realtime/fast defaults)')
     
     # Controller Gains (sent to firmware for runtime tuning)
-    parser.add_argument('--kbdot', type=float, default=-200000.0,
-                        help='B-dot gain for detumble mode (negative = damping)')
-    parser.add_argument('--kp', type=float, default=0.100,
+    parser.add_argument('--kbdot', type=float, default=400000.0,
+                        help='B-dot gain for detumble mode (positive = damping)')
+    parser.add_argument('--kp', type=float, default=0.00072658465,
                         help='Proportional gain for pointing mode')
-    parser.add_argument('--ki', type=float, default=0.0001,
+    parser.add_argument('--ki', type=float, default=8.4290285e-05,
                         help='Integral gain for pointing mode')
-    parser.add_argument('--kd', type=float, default=0.100,
+    parser.add_argument('--kd', type=float, default=0.14633999,
                         help='Derivative gain for pointing mode')
     
     # Hardware
@@ -63,6 +67,7 @@ def main():
         print("--- ADCS Simulation Host v3.0 (HITL) ---")
         print(f"Port: {args.port}")
         print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_I={args.ki}, K_D={args.kd}")
+        print(f"Force mode: {args.force_mode}")
     
     # Initialize components
     sat = SatellitePhysics()
@@ -111,6 +116,15 @@ def main():
     sat_currents = np.array([0.0, 0.0, 0.0])
     firmware_voltages = np.array([0.0, 0.0, 0.0])
     adcs_mode_id = 0
+    mode_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    mode_transitions = 0
+    last_mode_sample = None
+    sat_axis_count = 0
+    sat_axis_samples = 0
+    settle_time = None
+
+    force_mode_map = {"auto": 0, "detumble": 1, "spin": 2, "pointing": 3}
+    forced_mode_code = force_mode_map[args.force_mode]
 
     try:
         while True:
@@ -121,7 +135,30 @@ def main():
                 qw, qx, qy, qz = q
                 dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))
                 angle_err = math.degrees(math.acos(dot))
+                total_mode_samples = sum(mode_counts.values())
+                final_mode = int(adcs_mode_id)
+                mode_dwell_ratio = (
+                    mode_counts.get(final_mode, 0) / total_mode_samples
+                    if total_mode_samples > 0 else 0.0
+                )
+                forced_mode_dwell = (
+                    mode_counts.get(forced_mode_code, 0) / total_mode_samples
+                    if forced_mode_code != 0 and total_mode_samples > 0 else -1.0
+                )
+                sat_voltage_ratio = (
+                    sat_axis_count / sat_axis_samples if sat_axis_samples > 0 else 0.0
+                )
+                t_settle = settle_time if settle_time is not None else -1.0
                 print(f"FINAL_STATE: W={np.linalg.norm(w):.6f} rad/s | Err={angle_err:.6f} deg")
+                print(
+                    "FINAL_METRICS: "
+                    f"Mode={final_mode} "
+                    f"Dwell={mode_dwell_ratio:.6f} "
+                    f"ForcedDwell={forced_mode_dwell:.6f} "
+                    f"Sat={sat_voltage_ratio:.6f} "
+                    f"Transitions={mode_transitions} "
+                    f"Tsettle={t_settle:.6f}"
+                )
                 break
             
             DT = dt_val
@@ -141,7 +178,8 @@ def main():
             B_body = sat.get_b_field(q, B_inertial)
             
             # 6. Send to Firmware
-            debug_flags = 1 if args.open_loop else 0
+            reset_request = 1 if args.reset_controller and step_count < 5 else 0
+            debug_flags = (1 if args.open_loop else 0) | (forced_mode_code << 1) | (reset_request << 3)
             comms.send_packet(sat_currents.tolist(), w, B_body, q, 
                              args.kbdot, args.kp, args.ki, args.kd, DT,
                              debug_flags)
@@ -150,9 +188,27 @@ def main():
             if response:
                 firmware_voltages = np.array(response[0:3])
                 adcs_mode_id = response[3]
+                if adcs_mode_id in mode_counts:
+                    mode_counts[adcs_mode_id] += 1
+                if last_mode_sample is not None and adcs_mode_id != last_mode_sample:
+                    mode_transitions += 1
+                last_mode_sample = adcs_mode_id
+
+                sat_axis_count += int(np.sum(np.abs(firmware_voltages) >= 0.98 * 3.3))
+                sat_axis_samples += 3
             else:
                 # No response - firmware may be busy, keep last values
                 pass
+
+            omega_norm = np.linalg.norm(w)
+            qw, qx, qy, qz = q
+            dot = max(-1.0, min(1.0, 1 - 2*(qx**2 + qy**2)))
+            angle_err = math.degrees(math.acos(dot))
+            if settle_time is None:
+                if args.scenario == 'detumble' and omega_norm < 0.03:
+                    settle_time = sim_time
+                elif args.scenario == 'pointing' and omega_norm < 0.03 and angle_err < 10.0:
+                    settle_time = sim_time
             
             # --- Telemetry (10Hz target) ---
             # Send every 10 steps if DT=0.01 (100Hz), or every 1 step if DT=0.1 (10Hz)
