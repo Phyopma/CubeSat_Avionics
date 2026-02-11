@@ -36,6 +36,13 @@
 // State Machine Thresholds
 #define DETUMBLE_OMEGA_THRESH 0.03f     // rad/s (Relaxed to enter Pointing sooner)
 #define POINTING_OMEGA_THRESH 0.15f     // rad/s (Fallback to Detumble if omega increases)
+#define DETUMBLE_ENTRY_HOLD_SEC        2.0f    // Require low-rate condition this long before Pointing
+#define POINTING_EXIT_HOLD_SEC         1.5f    // Require unstable condition this long before fallback
+#define POINTING_LARGE_ERR_DEG         75.0f   // Large-angle regime with tighter rate margin
+#define POINTING_HIGH_ERR_OMEGA_THRESH 0.05f   // Fallback threshold during large-angle pointing
+#define POINTING_PROGRESS_EPS_DEG      0.25f   // Minimum error decrease counted as progress
+#define POINTING_NO_PROGRESS_SEC       45.0f   // Timeout before fallback when Pointing stalls
+#define POINTING_STALL_ERR_DEG         45.0f   // Stall fallback active only above this error
 
 // Actuator Conversion
 // B-dot convention in this codebase:

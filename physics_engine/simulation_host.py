@@ -18,7 +18,7 @@ from telemetry import TelemetryManager, VisualizerSender
 SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz) - Default - Default - Default
-TELEPLOT_ADDR = ("teleplot.fr", 32533)
+TELEPLOT_ADDR = ("teleplot.fr", 37126)
 
 def get_args():
     parser = argparse.ArgumentParser(description='ADCS Simulation Host (HITL Only)')
@@ -44,11 +44,11 @@ def get_args():
     # Controller Gains (sent to firmware for runtime tuning)
     parser.add_argument('--kbdot', type=float, default=400000.0,
                         help='B-dot gain for detumble mode (positive = damping)')
-    parser.add_argument('--kp', type=float, default=0.00072658465,
+    parser.add_argument('--kp', type=float, default=0.0014,
                         help='Proportional gain for pointing mode')
-    parser.add_argument('--ki', type=float, default=8.4290285e-05,
+    parser.add_argument('--ki', type=float, default=6e-05,
                         help='Integral gain for pointing mode')
-    parser.add_argument('--kd', type=float, default=0.14633999,
+    parser.add_argument('--kd', type=float, default=0.18,
                         help='Derivative gain for pointing mode')
     
     # Hardware

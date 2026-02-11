@@ -6,6 +6,23 @@ static adcs_control_t ctrl;
 static float dt = 0.01f; // 100Hz outer loop
 static uint8_t force_mode_enabled = 0;
 static adcs_mode_t forced_mode = CTRL_MODE_DETUMBLE;
+static float detumble_ready_time = 0.0f;
+static float pointing_unstable_time = 0.0f;
+static float pointing_no_progress_time = 0.0f;
+static float pointing_best_error_deg = 180.0f;
+
+static void ResetModeTransitionState(void) {
+    detumble_ready_time = 0.0f;
+    pointing_unstable_time = 0.0f;
+    pointing_no_progress_time = 0.0f;
+    pointing_best_error_deg = 180.0f;
+}
+
+static float ComputePointingErrorDeg(quat_t q_curr) {
+    float dot_z = 1.0f - 2.0f * (q_curr.x * q_curr.x + q_curr.y * q_curr.y);
+    dot_z = fmaxf(-1.0f, fminf(1.0f, dot_z));
+    return acosf(dot_z) * 57.2957795f;
+}
 
 void OuterLoop_Init(void) {
     memset(&ctrl, 0, sizeof(ctrl));
@@ -21,13 +38,23 @@ void OuterLoop_Init(void) {
     ctrl.q_target = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
     force_mode_enabled = 0;
     forced_mode = CTRL_MODE_DETUMBLE;
+    ResetModeTransitionState();
 }
 
 void OuterLoop_SetMode(adcs_mode_t mode) {
-    if (ctrl.mode != mode && mode == CTRL_MODE_SPIN_STABLE) {
+    if (ctrl.mode == mode) {
+        return;
+    }
+
+    if (mode == CTRL_MODE_SPIN_STABLE) {
         ctrl.w_damper = (vec3_t){0, 0, 0};
     }
+
+    // Integral state is only meaningful in Pointing mode.
+    ctrl.integral_error = (vec3_t){0, 0, 0};
+
     ctrl.mode = mode;
+    ResetModeTransitionState();
 }
 
 adcs_mode_t OuterLoop_GetMode(void) {
@@ -57,18 +84,19 @@ void OuterLoop_SetForcedMode(uint8_t force_mode_code) {
             return;
     }
 
-    ctrl.mode = forced_mode;
+    OuterLoop_SetMode(forced_mode);
 }
 
 void OuterLoop_ResetControllerState(void) {
     ctrl.integral_error = (vec3_t){0, 0, 0};
     ctrl.w_damper = (vec3_t){0, 0, 0};
+    ResetModeTransitionState();
 
     // Reset to a deterministic baseline mode unless an explicit override is active.
     if (force_mode_enabled) {
-        ctrl.mode = forced_mode;
+        OuterLoop_SetMode(forced_mode);
     } else {
-        ctrl.mode = CTRL_MODE_DETUMBLE;
+        OuterLoop_SetMode(CTRL_MODE_DETUMBLE);
     }
 }
 
@@ -205,17 +233,23 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
 
 static void Update_State_Machine(adcs_sensor_input_t *input) {
     if (force_mode_enabled) {
-        ctrl.mode = forced_mode;
+        OuterLoop_SetMode(forced_mode);
         return;
     }
 
     float omega_norm = Vec3_Norm(input->gyro);
+    float dt_step = fmaxf(dt, 1e-4f);
 
     switch (ctrl.mode) {
         case CTRL_MODE_DETUMBLE:
             if (omega_norm < DETUMBLE_OMEGA_THRESH) {
-                // Tumbling has reduced enough, switch to Pointing
-                OuterLoop_SetMode(CTRL_MODE_POINTING);
+                detumble_ready_time += dt_step;
+                if (detumble_ready_time >= DETUMBLE_ENTRY_HOLD_SEC) {
+                    // Tumbling has stayed low-rate long enough, switch to Pointing.
+                    OuterLoop_SetMode(CTRL_MODE_POINTING);
+                }
+            } else {
+                detumble_ready_time = 0.0f;
             }
             break;
 
@@ -223,12 +257,35 @@ static void Update_State_Machine(adcs_sensor_input_t *input) {
             // Placeholder: Logic to transition from Spin to Pointing
             break;
 
-        case CTRL_MODE_POINTING:
-            if (omega_norm > POINTING_OMEGA_THRESH) {
-                // Tumbling is too high, safety fallback to Detumble
+        case CTRL_MODE_POINTING: {
+            float pointing_error_deg = ComputePointingErrorDeg(input->orientation);
+            if (pointing_error_deg + POINTING_PROGRESS_EPS_DEG < pointing_best_error_deg) {
+                pointing_best_error_deg = pointing_error_deg;
+                pointing_no_progress_time = 0.0f;
+            } else {
+                pointing_no_progress_time += dt_step;
+            }
+
+            float omega_fallback_thresh = POINTING_OMEGA_THRESH;
+            if (pointing_error_deg > POINTING_LARGE_ERR_DEG) {
+                omega_fallback_thresh = fminf(omega_fallback_thresh, POINTING_HIGH_ERR_OMEGA_THRESH);
+            }
+
+            if (omega_norm > omega_fallback_thresh) {
+                pointing_unstable_time += dt_step;
+            } else {
+                pointing_unstable_time = 0.0f;
+            }
+
+            if (pointing_unstable_time >= POINTING_EXIT_HOLD_SEC ||
+                (pointing_no_progress_time >= POINTING_NO_PROGRESS_SEC &&
+                 pointing_error_deg > POINTING_STALL_ERR_DEG &&
+                 omega_norm > DETUMBLE_OMEGA_THRESH)) {
+                // Pointing became unstable or stalled; fall back to Detumble.
                 OuterLoop_SetMode(CTRL_MODE_DETUMBLE);
             }
             break;
+        }
 
         default:
             break;
