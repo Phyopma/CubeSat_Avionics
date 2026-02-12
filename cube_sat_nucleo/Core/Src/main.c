@@ -82,7 +82,12 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static float ClampF(float x, float lo, float hi)
+{
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
 /* USER CODE END 0 */
 
 /**
@@ -169,12 +174,6 @@ static float last_runtime_voltage = PIL_MAX_VOLTAGE;
 static float last_runtime_dipole = (1.0f / MTQ_DIPOLE_TO_AMP);
 #endif
 
-static float ClampF(float x, float lo, float hi)
-{
-    if (x < lo) return lo;
-    if (x > hi) return hi;
-    return x;
-}
 
 /* USER CODE END 2 */
 
