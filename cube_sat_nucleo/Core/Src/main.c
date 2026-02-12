@@ -34,6 +34,7 @@
 #include "outer_loop_control.h"
 #include "config.h"
 #include "teleplot.h"
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -162,6 +163,18 @@ static float last_kbdot = -1.0f, last_kp = -1.0f, last_ki = -1.0f, last_kd = -1.
 static float last_c_damp = -1.0f, last_i_virtual = -1.0f;
 static uint8_t last_force_mode = 0xFF;
 static uint8_t last_reset_request = 0;
+#ifdef SIMULATION_MODE
+static float runtime_mtq_dipole_to_amp = MTQ_DIPOLE_TO_AMP;
+static float last_runtime_voltage = PIL_MAX_VOLTAGE;
+static float last_runtime_dipole = (1.0f / MTQ_DIPOLE_TO_AMP);
+#endif
+
+static float ClampF(float x, float lo, float hi)
+{
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
 
 /* USER CODE END 2 */
 
@@ -205,6 +218,18 @@ while (1)
         }
         last_reset_request = reset_request;
 
+        float runtime_voltage = ClampF(0.001f * (float)sim_input.max_voltage_mV, 0.5f, 12.0f);
+        float runtime_dipole = ClampF(0.001f * (float)sim_input.dipole_strength_milli, 0.1f, 20.0f);
+
+        if (fabsf(runtime_voltage - last_runtime_voltage) > 1e-4f) {
+            InnerLoop_SetVoltageLimit(runtime_voltage);
+            last_runtime_voltage = runtime_voltage;
+        }
+        if (fabsf(runtime_dipole - last_runtime_dipole) > 1e-6f) {
+            runtime_mtq_dipole_to_amp = 1.0f / runtime_dipole;
+            last_runtime_dipole = runtime_dipole;
+        }
+
         // Dynamic Gains from Sim
         if (force_mode == 2) {
             // Forced SPIN mode reuses kp/kd fields for Kane parameters
@@ -238,9 +263,13 @@ while (1)
 #endif
 
         // 3. Command the Inner Loop
-        float target_x = adcs_out.dipole_request.x * MTQ_DIPOLE_TO_AMP;
-        float target_y = adcs_out.dipole_request.y * MTQ_DIPOLE_TO_AMP;
-        float target_z = adcs_out.dipole_request.z * MTQ_DIPOLE_TO_AMP;
+        float mtq_dipole_to_amp = MTQ_DIPOLE_TO_AMP;
+#ifdef SIMULATION_MODE
+        mtq_dipole_to_amp = runtime_mtq_dipole_to_amp;
+#endif
+        float target_x = adcs_out.dipole_request.x * mtq_dipole_to_amp;
+        float target_y = adcs_out.dipole_request.y * mtq_dipole_to_amp;
+        float target_z = adcs_out.dipole_request.z * mtq_dipole_to_amp;
         
         InnerLoop_SetTargetCurrent(target_x, target_y, target_z);
 

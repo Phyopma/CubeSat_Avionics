@@ -50,10 +50,10 @@ The model uses a **tilted dipole** approximation: the satellite orbits in an inc
 
 | Gain | Default | Mode | Effect |
 |---|---|---|---|
-| `K_BDOT` | 200,000 | Detumble | Positive = damping; higher magnitude = faster saturation |
-| `K_P` | 0.100 | Pointing | Higher = stiffer spring toward target |
-| `K_I` | 0.0001 | Pointing | Higher = eliminates steady-state error (risk of windup) |
-| `K_D` | 0.100 | Pointing | Higher = more damping (slower convergence) |
+| `K_BDOT` | 400,000 | Detumble | Positive = damping; higher magnitude = faster saturation |
+| `K_P` | 0.0012 | Pointing | Higher = stiffer spring toward target |
+| `K_I` | 0.00003 | Pointing | Higher = eliminates steady-state error (risk of windup) |
+| `K_D` | 0.17 | Pointing | Higher = more damping (slower convergence) |
 
 ### Inner Loop (PI Current Controller)
 
@@ -65,6 +65,25 @@ The model uses a **tilted dipole** approximation: the satellite orbits in an inc
 | `PIL_KI` | 1500.0 | Integral gain |
 | `PIL_T` | 0.001 | Sample time (1kHz) |
 | `PIL_MAX_VOLTAGE` | 3.3V | Output clamp (datasheet typical supply) |
+
+### HITL Runtime Calibration Override
+
+In HITL mode, host now sends runtime calibration in every packet:
+
+- `max_voltage_mV` (uint16): firmware runtime voltage clamp
+- `dipole_strength_milli` (uint16): firmware runtime dipole conversion basis
+
+Host CLI behavior:
+
+- `--max-voltage` and `--dipole-strength` are optional overrides.
+- If omitted, host uses hardcoded defaults `3.3V` and `2.88 Am^2/A`.
+- Overrides are automatic; no additional debug flag is required.
+
+Host/Firmware packet compatibility:
+
+- Input packet format: `<H3f3f3f4f5fBHH`
+- Input packet size: `79` bytes
+- Host and firmware versions must match this schema.
 
 ## 5. State Machine Thresholds
 

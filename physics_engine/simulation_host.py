@@ -7,6 +7,8 @@ import struct
 import time
 import math
 import sys
+import os
+import re
 import argparse
 import numpy as np
 
@@ -18,7 +20,72 @@ from telemetry import TelemetryManager, VisualizerSender
 SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz) - Default - Default - Default
-TELEPLOT_ADDR = ("teleplot.fr", 37126)
+TELEPLOT_ADDR = ("teleplot.fr", 45076)
+FW_CONFIG_PATH = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "cube_sat_nucleo",
+        "Application",
+        "Algorithms",
+        "Inc",
+        "config.h",
+    )
+)
+FW_MAX_VOLTAGE_DEFAULT = 3.3
+FW_DIPOLE_STRENGTH_DEFAULT = 2.88
+HOST_DEFAULT_MAX_VOLTAGE = 3.3
+HOST_DEFAULT_DIPOLE_STRENGTH = 2.88
+FW_RUNTIME_MAX_VOLTAGE_MIN = 0.5
+FW_RUNTIME_MAX_VOLTAGE_MAX = 12.0
+FW_RUNTIME_DIPOLE_MIN = 0.1
+FW_RUNTIME_DIPOLE_MAX = 20.0
+
+
+def _extract_define_expr(text, macro):
+    m = re.search(rf"^\s*#define\s+{re.escape(macro)}\s+(.+)$", text, re.MULTILINE)
+    if not m:
+        return None
+    return m.group(1).split("//", 1)[0].strip()
+
+
+def _eval_c_float_expr(expr):
+    if not expr:
+        return None
+    cleaned = re.sub(r"(?<=\d)f\b", "", expr)
+    if not re.fullmatch(r"[0-9eE+\-*/().\s]+", cleaned):
+        return None
+    try:
+        return float(eval(cleaned, {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
+def read_firmware_calibration():
+    fw_max = FW_MAX_VOLTAGE_DEFAULT
+    fw_dipole = FW_DIPOLE_STRENGTH_DEFAULT
+    source = f"defaults (max={FW_MAX_VOLTAGE_DEFAULT}, dipole={FW_DIPOLE_STRENGTH_DEFAULT})"
+
+    try:
+        with open(FW_CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        expr_max = _extract_define_expr(text, "PIL_MAX_VOLTAGE")
+        expr_mtq = _extract_define_expr(text, "MTQ_DIPOLE_TO_AMP")
+
+        parsed_max = _eval_c_float_expr(expr_max)
+        parsed_mtq = _eval_c_float_expr(expr_mtq)
+
+        if parsed_max and parsed_max > 0.0:
+            fw_max = parsed_max
+        if parsed_mtq and abs(parsed_mtq) > 1e-12:
+            fw_dipole = 1.0 / parsed_mtq
+
+        source = FW_CONFIG_PATH
+    except OSError:
+        pass
+
+    return fw_max, fw_dipole, source
 
 def get_args():
     parser = argparse.ArgumentParser(description='ADCS Simulation Host (HITL Only)')
@@ -44,11 +111,11 @@ def get_args():
     # Controller Gains (sent to firmware for runtime tuning)
     parser.add_argument('--kbdot', type=float, default=400000.0,
                         help='B-dot gain for detumble mode (positive = damping)')
-    parser.add_argument('--kp', type=float, default=0.0014,
+    parser.add_argument('--kp', type=float, default=0.0012,
                         help='Proportional gain for pointing mode')
-    parser.add_argument('--ki', type=float, default=6e-05,
+    parser.add_argument('--ki', type=float, default=3e-05,
                         help='Integral gain for pointing mode')
-    parser.add_argument('--kd', type=float, default=0.18,
+    parser.add_argument('--kd', type=float, default=0.17,
                         help='Derivative gain for pointing mode')
     
     # Hardware
@@ -56,21 +123,66 @@ def get_args():
                         help='Serial port for Nucleo board')
     parser.add_argument('--debug', action='store_true',
                         help='Enable detailed physics debug logging')
+
+    # Physics Calibration
+    parser.add_argument('--max-voltage', type=float, default=None,
+                        help='Max H-bridge power supply voltage [V] (optional override)')
+    parser.add_argument('--dipole-strength', type=float, default=None,
+                        help='Magnetorquer strength factor [Am^2/A] (optional override)')
     
     return parser.parse_args()
 
 
 def main():
     args = get_args()
+    fw_max_voltage, fw_dipole_strength, fw_source = read_firmware_calibration()
+
+    eff_max_voltage = args.max_voltage if args.max_voltage is not None else HOST_DEFAULT_MAX_VOLTAGE
+    eff_dipole_strength = args.dipole_strength if args.dipole_strength is not None else HOST_DEFAULT_DIPOLE_STRENGTH
+
+    if eff_max_voltage <= 0.0:
+        print("ERROR: effective max voltage must be > 0.", file=sys.stderr)
+        sys.exit(2)
+    if eff_dipole_strength <= 0.0:
+        print("ERROR: effective dipole strength must be > 0.", file=sys.stderr)
+        sys.exit(2)
+
+    clamped_max_voltage = min(max(eff_max_voltage, FW_RUNTIME_MAX_VOLTAGE_MIN), FW_RUNTIME_MAX_VOLTAGE_MAX)
+    clamped_dipole_strength = min(max(eff_dipole_strength, FW_RUNTIME_DIPOLE_MIN), FW_RUNTIME_DIPOLE_MAX)
+    if not math.isclose(eff_max_voltage, clamped_max_voltage, rel_tol=0.0, abs_tol=1e-9):
+        print(
+            "WARNING: Effective max-voltage is outside firmware runtime range "
+            f"[{FW_RUNTIME_MAX_VOLTAGE_MIN}, {FW_RUNTIME_MAX_VOLTAGE_MAX}]V. "
+            f"Requested={eff_max_voltage:.6g}V -> Applied={clamped_max_voltage:.6g}V.",
+            file=sys.stderr,
+        )
+    if not math.isclose(eff_dipole_strength, clamped_dipole_strength, rel_tol=0.0, abs_tol=1e-9):
+        print(
+            "WARNING: Effective dipole-strength is outside firmware runtime range "
+            f"[{FW_RUNTIME_DIPOLE_MIN}, {FW_RUNTIME_DIPOLE_MAX}] Am^2/A. "
+            f"Requested={eff_dipole_strength:.6g} -> Applied={clamped_dipole_strength:.6g}.",
+            file=sys.stderr,
+        )
+    eff_max_voltage = clamped_max_voltage
+    eff_dipole_strength = clamped_dipole_strength
+    max_voltage_mV = max(0, min(65535, int(round(eff_max_voltage * 1000.0))))
+    dipole_strength_milli = max(0, min(65535, int(round(eff_dipole_strength * 1000.0))))
     
     if not args.quiet:
+        max_src = "CLI" if args.max_voltage is not None else "host default"
+        dip_src = "CLI" if args.dipole_strength is not None else "host default"
         print("--- ADCS Simulation Host v3.0 (HITL) ---")
         print(f"Port: {args.port}")
         print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_I={args.ki}, K_D={args.kd}")
+        print(f"Physics/FW override: MaxV={eff_max_voltage}V ({max_src}), Dipole={eff_dipole_strength}Am^2/A ({dip_src})")
+        print(f"Override packet: max_voltage_mV={max_voltage_mV}, dipole_strength_milli={dipole_strength_milli}")
+        print(f"Host defaults: MaxV={HOST_DEFAULT_MAX_VOLTAGE}V, Dipole={HOST_DEFAULT_DIPOLE_STRENGTH}Am^2/A")
+        print(f"Firmware compile-time calibration: MaxV={fw_max_voltage}V, Dipole={fw_dipole_strength}Am^2/A")
+        print(f"Firmware calib source: {fw_source}")
         print(f"Force mode: {args.force_mode}")
     
     # Initialize components
-    sat = SatellitePhysics()
+    sat = SatellitePhysics(max_voltage=eff_max_voltage, dipole_strength=eff_dipole_strength)
     tel = TelemetryManager(TELEPLOT_ADDR)
     viz = VisualizerSender()
     
@@ -121,10 +233,15 @@ def main():
     last_mode_sample = None
     sat_axis_count = 0
     sat_axis_samples = 0
+    proj_loss_sum = 0.0
+    proj_loss_samples = 0
+    int_clamp_count = 0
+    int_clamp_samples = 0
     settle_time = None
 
     force_mode_map = {"auto": 0, "detumble": 1, "spin": 2, "pointing": 3}
     forced_mode_code = force_mode_map[args.force_mode]
+    sat_voltage_ref = eff_max_voltage
 
     try:
         while True:
@@ -148,6 +265,12 @@ def main():
                 sat_voltage_ratio = (
                     sat_axis_count / sat_axis_samples if sat_axis_samples > 0 else 0.0
                 )
+                avg_proj_loss = (
+                    proj_loss_sum / proj_loss_samples if proj_loss_samples > 0 else 0.0
+                )
+                int_clamp_ratio = (
+                    int_clamp_count / int_clamp_samples if int_clamp_samples > 0 else 0.0
+                )
                 t_settle = settle_time if settle_time is not None else -1.0
                 print(f"FINAL_STATE: W={np.linalg.norm(w):.6f} rad/s | Err={angle_err:.6f} deg")
                 print(
@@ -157,7 +280,9 @@ def main():
                     f"ForcedDwell={forced_mode_dwell:.6f} "
                     f"Sat={sat_voltage_ratio:.6f} "
                     f"Transitions={mode_transitions} "
-                    f"Tsettle={t_settle:.6f}"
+                    f"Tsettle={t_settle:.6f} "
+                    f"ProjLoss={avg_proj_loss:.6f} "
+                    f"IntClamp={int_clamp_ratio:.6f}"
                 )
                 break
             
@@ -182,19 +307,27 @@ def main():
             debug_flags = (1 if args.open_loop else 0) | (forced_mode_code << 1) | (reset_request << 3)
             comms.send_packet(sat_currents.tolist(), w, B_body, q, 
                              args.kbdot, args.kp, args.ki, args.kd, DT,
-                             debug_flags)
+                             debug_flags, max_voltage_mV, dipole_strength_milli)
             response = comms.read_packet()
             
             if response:
                 firmware_voltages = np.array(response[0:3])
-                adcs_mode_id = response[3]
+                packed_mode = int(response[3]) & 0xFF
+                adcs_mode_id = packed_mode & 0x03
+                int_clamp_flag = (packed_mode >> 2) & 0x01
+                proj_loss_q5 = (packed_mode >> 3) & 0x1F
+                proj_loss = proj_loss_q5 / 31.0
                 if adcs_mode_id in mode_counts:
                     mode_counts[adcs_mode_id] += 1
                 if last_mode_sample is not None and adcs_mode_id != last_mode_sample:
                     mode_transitions += 1
                 last_mode_sample = adcs_mode_id
+                proj_loss_sum += proj_loss
+                proj_loss_samples += 1
+                int_clamp_count += int_clamp_flag
+                int_clamp_samples += 1
 
-                sat_axis_count += int(np.sum(np.abs(firmware_voltages) >= 0.98 * 3.3))
+                sat_axis_count += int(np.sum(np.abs(firmware_voltages) >= 0.98 * sat_voltage_ref))
                 sat_axis_samples += 3
             else:
                 # No response - firmware may be busy, keep last values
@@ -217,7 +350,7 @@ def main():
             
             if not args.quiet and step_count % telemetry_skip == 0:
                 # Calculate torque for telemetry based on physics state current
-                m_actual = sat_currents * 2.88 # Datasheet: 2.88 Am²/A
+                m_actual = sat_currents * sat.dipole_strength # Datasheet: 2.88 Am²/A (default)
                 torque_applied = np.cross(m_actual, B_body)
             
             if not args.quiet and step_count % telemetry_skip == 0:
@@ -251,7 +384,7 @@ def main():
                 if step_count % (telemetry_skip * 10) == 0:
                     print(f"t={sim_time:5.1f}s | Mode={m_str:10s} | W={np.linalg.norm(w):.3f} | Err={angle_err:5.1f}° | {stability_str} (P={work_rate:.2e}) | V={firmware_voltages}")
                     if args.debug:
-                        print(f"  DEBUG: w={w} | B={B_body} | m={sat_currents * 2.88}")
+                        print(f"  DEBUG: w={w} | B={B_body} | m={sat_currents * sat.dipole_strength}")
             
             sim_time += DT
             step_count += 1

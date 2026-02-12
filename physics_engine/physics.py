@@ -2,7 +2,7 @@ import numpy as np
 import math
 
 class SatellitePhysics:
-    def __init__(self):
+    def __init__(self, max_voltage=3.3, dipole_strength=2.88):
         # 1. Mass Properties (2U CubeSat approximation)
         # 10cm x 10cm x 20cm, 2kg
         # I = m/12 * (h^2 + d^2)
@@ -16,6 +16,10 @@ class SatellitePhysics:
         self.R = 28.0  # Ohms
         self.L = np.array([0.025, 0.025, 0.012]) # XY: 25mH, Z: 12mH (averages)
         
+        # Calibration Parameters
+        self.max_voltage = max_voltage
+        self.dipole_strength = dipole_strength
+
         # 3. State Vector [q0, q1, q2, q3, wx, wy, wz, ix, iy, iz]
         # q = [qw, qx, qy, qz], w = [wx, wy, wz], i = current in Amps
         self.state = np.zeros(10)
@@ -72,7 +76,7 @@ class SatellitePhysics:
         
         # 3. Magnetic Torque
         B_body = self.get_b_field(q, B_inertial)
-        m_actual = i * 2.88  # Datasheet: 0.34 Am² @ 3.3V, R=28Ω → 2.88 Am²/A
+        m_actual = i * self.dipole_strength  # Datasheet: 0.34 Am² @ 3.3V, R=28Ω → 2.88 Am²/A (default)
         torque_mag = np.cross(m_actual, B_body)
         
         # 4. Rigid Body Dynamics
@@ -83,8 +87,8 @@ class SatellitePhysics:
         return np.concatenate((q_dot, w_dot, i_dot))
 
     def rk4_step(self, t, dt, v_command, B_inertial):
-        # 1. Physical Saturation: Clamp voltage to +/- 3.3V (datasheet typical supply)
-        v_command = np.clip(v_command, -3.3, 3.3)
+        # 1. Physical Saturation: Clamp voltage to +/- max_voltage (datasheet typical supply)
+        v_command = np.clip(v_command, -self.max_voltage, self.max_voltage)
         
         # SUB-STEPPING: RL circuit needs ~0.5ms steps for stability at 28 ohms / 12mH
         # Calculate steps needed to keep sub_dt <= 0.5ms

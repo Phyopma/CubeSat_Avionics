@@ -10,6 +10,8 @@ static float detumble_ready_time = 0.0f;
 static float pointing_unstable_time = 0.0f;
 static float pointing_no_progress_time = 0.0f;
 static float pointing_best_error_deg = 180.0f;
+static float last_projection_loss = 0.0f;
+static uint8_t last_integral_limited = 0;
 
 static void ResetModeTransitionState(void) {
     detumble_ready_time = 0.0f;
@@ -22,6 +24,10 @@ static float ComputePointingErrorDeg(quat_t q_curr) {
     float dot_z = 1.0f - 2.0f * (q_curr.x * q_curr.x + q_curr.y * q_curr.y);
     dot_z = fmaxf(-1.0f, fminf(1.0f, dot_z));
     return acosf(dot_z) * 57.2957795f;
+}
+
+static float Clamp01(float x) {
+    return fmaxf(0.0f, fminf(1.0f, x));
 }
 
 void OuterLoop_Init(void) {
@@ -38,6 +44,8 @@ void OuterLoop_Init(void) {
     ctrl.q_target = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
     force_mode_enabled = 0;
     forced_mode = CTRL_MODE_DETUMBLE;
+    last_projection_loss = 0.0f;
+    last_integral_limited = 0;
     ResetModeTransitionState();
 }
 
@@ -59,6 +67,18 @@ void OuterLoop_SetMode(adcs_mode_t mode) {
 
 adcs_mode_t OuterLoop_GetMode(void) {
     return ctrl.mode;
+}
+
+uint8_t OuterLoop_GetTelemetryByte(void) {
+    // Bit packing (no packet-size change):
+    // bits 0-1: mode (0..3)
+    // bit 2:    integral clamp/freeze state in current step
+    // bits 3-7: projected-torque loss ratio quantized to [0..31]
+    uint8_t mode_bits = ((uint8_t)ctrl.mode) & 0x03u;
+    uint8_t int_flag = (last_integral_limited ? 1u : 0u) << 2;
+    float q = fmaxf(0.0f, fminf(31.0f, last_projection_loss * 31.0f + 0.5f));
+    uint8_t proj_q5 = ((uint8_t)q) << 3;
+    return (uint8_t)(mode_bits | int_flag | proj_q5);
 }
 
 void OuterLoop_SetForcedMode(uint8_t force_mode_code) {
@@ -199,6 +219,8 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
     
     // Check for 180 degree singularity
     float dot_z = Vec3_Dot(current_z, target_body);
+    dot_z = fmaxf(-1.0f, fminf(1.0f, dot_z));
+    float err_deg = acosf(dot_z) * 57.2957795f;
     vec3_t err_vec;
     if (dot_z < -0.999f) {
         // Antiparallel! Cross product is zero. 
@@ -208,27 +230,87 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
         err_vec = Vec3_Cross(current_z, target_body);
     }
     
-    // PID Controller: tau = kp * err + ki * int_err - kd * w
-    
-    // Update Integral Error with Anti-Windup
-    ctrl.integral_error = Vec3_Add(ctrl.integral_error, Vec3_ScalarMult(err_vec, dt));
-    
-    // Clamp Integral Error
+    // Gain scheduling:
+    // - Low-angle: stronger proportional action
+    // - High-angle: stronger damping to avoid aggressive overshoot
+    float sched_span = fmaxf(POINTING_SCHED_ERR_HIGH_DEG - POINTING_SCHED_ERR_LOW_DEG, 1.0f);
+    float sched_alpha = Clamp01((err_deg - POINTING_SCHED_ERR_LOW_DEG) / sched_span);
+    float kp_scale = POINTING_KP_SCALE_LOW + (1.0f - POINTING_KP_SCALE_LOW) * sched_alpha;
+    float kd_scale = 1.0f + (POINTING_KD_SCALE_HIGH - 1.0f) * sched_alpha;
+    float kp_eff = ctrl.kp * kp_scale;
+    float kd_eff = ctrl.kd * kd_scale;
+
+    // Integral management:
+    // - leak always active (bleed-down)
+    // - only integrate in controllable regime (small error + low rate)
+    float dt_safe = fmaxf(dt, 0.0f);
+    float leak = fmaxf(0.0f, 1.0f - POINTING_INT_LEAK * dt_safe);
+    float omega_norm = Vec3_Norm(w);
+    uint8_t integral_limited = 0;
+
+    ctrl.integral_error = Vec3_ScalarMult(ctrl.integral_error, leak);
+    if (err_deg <= POINTING_INT_ENABLE_ERR_DEG && omega_norm <= POINTING_INT_ENABLE_OMEGA) {
+        ctrl.integral_error = Vec3_Add(ctrl.integral_error, Vec3_ScalarMult(err_vec, dt_safe));
+    } else {
+        integral_limited = 1;
+    }
+
     float int_mag = Vec3_Norm(ctrl.integral_error);
     if (int_mag > MAX_INTEGRAL_ERROR) {
         ctrl.integral_error = Vec3_ScalarMult(ctrl.integral_error, MAX_INTEGRAL_ERROR / int_mag);
+        integral_limited = 1;
     }
-    
-    vec3_t tau_p = Vec3_ScalarMult(err_vec, ctrl.kp);
+
+    vec3_t tau_p = Vec3_ScalarMult(err_vec, kp_eff);
     vec3_t tau_i = Vec3_ScalarMult(ctrl.integral_error, ctrl.ki);
-    vec3_t tau_d = Vec3_ScalarMult(w, ctrl.kd);
-    
-    vec3_t tau_req = Vec3_Sub(Vec3_Add(tau_p, tau_i), tau_d);
-    
+    vec3_t tau_d = Vec3_ScalarMult(w, kd_eff);
+    vec3_t tau_raw = Vec3_Sub(Vec3_Add(tau_p, tau_i), tau_d);
+
+    // Explicit magnetic projection:
+    // command only the torque component orthogonal to B.
     float B2 = Vec3_Dot(B, B);
-    if (B2 < 1e-12f) return (vec3_t){0, 0, 0};
-    
-    return Vec3_ScalarMult(Vec3_Cross(B, tau_req), 1.0f / B2);
+    if (B2 < 1e-12f) {
+        last_projection_loss = 1.0f;
+        last_integral_limited = 1;
+        return (vec3_t){0, 0, 0};
+    }
+
+    float inv_b = 1.0f / sqrtf(B2);
+    vec3_t b_hat = Vec3_ScalarMult(B, inv_b);
+    float tau_parallel = Vec3_Dot(tau_raw, b_hat);
+    vec3_t tau_proj = Vec3_Sub(tau_raw, Vec3_ScalarMult(b_hat, tau_parallel));
+
+    float tau_raw_mag = Vec3_Norm(tau_raw);
+    float projection_loss = 0.0f;
+    if (tau_raw_mag > 1e-9f) {
+        projection_loss = fminf(1.0f, fabsf(tau_parallel) / tau_raw_mag);
+    }
+
+    // If magnetic geometry is poor, freeze integral growth and bleed faster.
+    if (projection_loss > 0.55f) {
+        integral_limited = 1;
+        ctrl.integral_error = Vec3_ScalarMult(ctrl.integral_error, leak);
+    }
+
+    last_projection_loss = projection_loss;
+    last_integral_limited = integral_limited;
+
+    vec3_t m_point = Vec3_ScalarMult(Vec3_Cross(B, tau_proj), 1.0f / B2);
+
+    // Escape blend for near-singular magnetic geometry:
+    // when most desired torque is uncommandable, blend in B-dot damping
+    // to steer rates away from the stuck manifold.
+    if (projection_loss > 0.80f) {
+        float alpha = Clamp01((projection_loss - 0.80f) / 0.20f);
+        vec3_t m_bdot = Control_BDot(B, w);
+        m_point = Vec3_Add(
+            Vec3_ScalarMult(m_point, 1.0f - alpha),
+            Vec3_ScalarMult(m_bdot, alpha)
+        );
+        last_integral_limited = 1;
+    }
+
+    return m_point;
 }
 
 static void Update_State_Machine(adcs_sensor_input_t *input) {
@@ -277,10 +359,19 @@ static void Update_State_Machine(adcs_sensor_input_t *input) {
                 pointing_unstable_time = 0.0f;
             }
 
-            if (pointing_unstable_time >= POINTING_EXIT_HOLD_SEC ||
-                (pointing_no_progress_time >= POINTING_NO_PROGRESS_SEC &&
-                 pointing_error_deg > POINTING_STALL_ERR_DEG &&
-                 omega_norm > DETUMBLE_OMEGA_THRESH)) {
+            float unstable_no_progress_floor = fmaxf(0.25f * POINTING_NO_PROGRESS_SEC, 3.0f);
+            uint8_t sustained_unstable = (
+                pointing_unstable_time >= POINTING_EXIT_HOLD_SEC &&
+                pointing_no_progress_time >= unstable_no_progress_floor &&
+                pointing_error_deg > POINTING_STALL_ERR_DEG
+            );
+            uint8_t stalled_high_rate = (
+                pointing_no_progress_time >= POINTING_NO_PROGRESS_SEC &&
+                pointing_error_deg > POINTING_STALL_ERR_DEG &&
+                omega_norm > omega_fallback_thresh
+            );
+
+            if (sustained_unstable || stalled_high_rate) {
                 // Pointing became unstable or stalled; fall back to Detumble.
                 OuterLoop_SetMode(CTRL_MODE_DETUMBLE);
             }
@@ -303,15 +394,21 @@ void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float d
     
     switch (ctrl.mode) {
         case CTRL_MODE_DETUMBLE:
+            last_projection_loss = 0.0f;
+            last_integral_limited = 0;
             m_cmd = Control_BDot(input->mag_field, input->gyro);
             break;
         case CTRL_MODE_SPIN_STABLE:
+            last_projection_loss = 0.0f;
+            last_integral_limited = 0;
             m_cmd = Control_SpinStabilization(input->mag_field, input->gyro);
             break;
         case CTRL_MODE_POINTING:
             m_cmd = Control_Pointing(input->orientation, input->gyro, input->mag_field);
             break;
         default:
+            last_projection_loss = 0.0f;
+            last_integral_limited = 0;
             break;
     }
     

@@ -88,7 +88,8 @@ typedef struct __attribute__((packed)) {
     float kd;           // Pointing Derivative Gain
     float dt;           // Simulation Step Size
     uint8_t debug_flags; // Bit0: Open Loop, Bits1-2: Forced Mode, Bit3: Reset Controller State (edge-triggered)
-    uint8_t padding[3];  // Align to 4-byte boundary
+    uint16_t max_voltage_mV;       // Runtime voltage clamp override [mV]
+    uint16_t dipole_strength_milli; // Runtime dipole strength override [milli Am^2/A]
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {
@@ -96,7 +97,10 @@ typedef struct __attribute__((packed)) {
     float command_voltage_x;
     float command_voltage_y;
     float command_voltage_z;
-    uint8_t adcs_mode;  // 0:Idle, 1:Detumble, 2:Spin, 3:Pointing
+    uint8_t adcs_mode;  // Packed telemetry byte:
+                        // bits0-1 mode (0:Idle,1:Detumble,2:Spin,3:Pointing),
+                        // bit2 integral clamp/freeze flag,
+                        // bits3-7 projection-loss quantized [0..31]
     uint8_t padding[3]; // Align to 4-byte boundaries
 } SimPacket_Output_t;
 

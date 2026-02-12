@@ -14,11 +14,17 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-ROOT = "/Users/phyopyae/eecs159.tmp/physics_engine"
+ROOT = "/Users/phyopyae/eecs159/physics_engine"
 SIM_SCRIPT = "simulation_host.py"
 DEFAULT_PORT = "/dev/cu.usbmodem21303"
 MAX_RETRIES = 3
 RETRY_BASE_SEC = 0.5
+BASELINE_KBDOT = 400000.0
+BASELINE_KP = 0.0012
+BASELINE_KI = 3e-05
+BASELINE_KD = 0.17
+BASELINE_C_DAMP = 0.0016405224
+BASELINE_I_VIRTUAL = 0.0083109405
 
 
 @dataclass
@@ -38,6 +44,8 @@ class RunResult:
     mode_dwell: float = 0.0
     forced_mode_dwell: float = -1.0
     sat_ratio: float = 1.0
+    proj_loss: float = 1.0
+    int_clamp: float = 1.0
     transitions: int = 999
     t_settle: float = -1.0
     score: float = 1e9
@@ -67,25 +75,33 @@ def parse_final(output: str) -> Tuple[Optional[float], Optional[float]]:
 
 
 def parse_metrics(output: str) -> Dict[str, float]:
-    metrics_re = re.compile(
-        r"FINAL_METRICS:\s+Mode=(\d+)\s+"
-        r"Dwell=([\d\.eE\+\-]+)\s+"
-        r"ForcedDwell=([\d\.eE\+\-]+)\s+"
-        r"Sat=([\d\.eE\+\-]+)\s+"
-        r"Transitions=(\d+)\s+"
-        r"Tsettle=([\d\.eE\+\-]+)"
-    )
+    key_map = {
+        "Mode": ("final_mode", int),
+        "Dwell": ("mode_dwell", float),
+        "ForcedDwell": ("forced_mode_dwell", float),
+        "Sat": ("sat_ratio", float),
+        "Transitions": ("transitions", int),
+        "Tsettle": ("t_settle", float),
+        "ProjLoss": ("proj_loss", float),
+        "IntClamp": ("int_clamp", float),
+    }
     for line in reversed(output.splitlines()):
-        m = metrics_re.search(line)
-        if m:
-            return {
-                "final_mode": int(m.group(1)),
-                "mode_dwell": float(m.group(2)),
-                "forced_mode_dwell": float(m.group(3)),
-                "sat_ratio": float(m.group(4)),
-                "transitions": int(m.group(5)),
-                "t_settle": float(m.group(6)),
-            }
+        if "FINAL_METRICS:" not in line:
+            continue
+        values: Dict[str, float] = {}
+        for token in line.replace("FINAL_METRICS:", "").strip().split():
+            if "=" not in token:
+                continue
+            key, raw = token.split("=", 1)
+            if key not in key_map:
+                continue
+            out_key, caster = key_map[key]
+            try:
+                values[out_key] = caster(raw)
+            except ValueError:
+                continue
+        if values:
+            return values
     return {}
 
 
@@ -161,6 +177,8 @@ def run_sim(
                 mode_dwell=float(metrics.get("mode_dwell", 0.0)),
                 forced_mode_dwell=float(metrics.get("forced_mode_dwell", -1.0)),
                 sat_ratio=float(metrics.get("sat_ratio", 1.0)),
+                proj_loss=float(metrics.get("proj_loss", 1.0)),
+                int_clamp=float(metrics.get("int_clamp", 1.0)),
                 transitions=int(metrics.get("transitions", 999)),
                 t_settle=float(metrics.get("t_settle", -1.0)),
             )
@@ -210,23 +228,41 @@ def composite_score(r: RunResult, required_mode: Optional[int]) -> float:
     if not r.ok:
         return 1e9
 
-    # Hard fail for forced-mode runs with insufficient occupancy.
-    if required_mode is not None and r.forced_mode_dwell >= 0.0 and r.forced_mode_dwell < 0.70:
-        return 1e8 + (0.70 - r.forced_mode_dwell) * 1e6
+    # Hard fail for forced-pointing runs with insufficient occupancy.
+    if r.force_mode == "pointing" and r.forced_mode_dwell >= 0.0 and r.forced_mode_dwell < 0.95:
+        return 1e8 + (0.95 - r.forced_mode_dwell) * 1e6
+
+    # Keep occupancy checks for other forced modes.
+    if required_mode is not None and r.force_mode in ("detumble", "spin"):
+        if r.forced_mode_dwell >= 0.0 and r.forced_mode_dwell < 0.70:
+            return 1e8 + (0.70 - r.forced_mode_dwell) * 1e6
 
     t_settle = r.t_settle if r.t_settle >= 0 else (1.5 * r.duration)
     mode_chatter = r.transitions / max(1.0, r.duration / 10.0)
 
-    score = (
-        0.35 * r.err_deg +
-        0.25 * t_settle +
-        0.20 * r.sat_ratio +
-        0.10 * mode_chatter +
-        0.10 * r.w_final
-    )
+    if r.scenario == "detumble":
+        # For detumble scenarios, attitude error is not a control objective.
+        score = (
+            0.45 * r.w_final +
+            0.25 * t_settle +
+            0.20 * r.sat_ratio +
+            0.10 * mode_chatter
+        )
+    else:
+        score = (
+            0.30 * r.err_deg +
+            0.20 * t_settle +
+            0.15 * r.sat_ratio +
+            0.10 * mode_chatter +
+            0.10 * r.w_final +
+            0.10 * r.proj_loss +
+            0.05 * r.int_clamp
+        )
 
     if required_mode is not None and r.final_mode != required_mode:
         score += 500.0
+    if r.force_mode == "auto" and r.scenario == "pointing" and r.final_mode != 3:
+        score += 800.0
 
     return score
 
@@ -237,6 +273,7 @@ def format_result(r: RunResult) -> str:
     return (
         f"W={r.w_final:.4f} Err={r.err_deg:.2f}deg Mode={r.final_mode} "
         f"FDwell={r.forced_mode_dwell:.3f} Sat={r.sat_ratio:.3f} "
+        f"Proj={r.proj_loss:.3f} IntClamp={r.int_clamp:.3f} "
         f"Trans={r.transitions} Tset={r.t_settle:.2f}s Score={r.score:.3f}"
     )
 
@@ -354,6 +391,51 @@ def run_detumble_search() -> Tuple[float, List[RunResult]]:
     return best.kbdot, (coarse_results + refine_results)
 
 
+def run_baseline_matrix_snapshot() -> str:
+    cases = [
+        ("DT_A", "detumble", (0.5, 0.5, 0.5), 600.0),
+        ("DT_B", "detumble", (0.7, 0.2, 0.3), 600.0),
+        ("PT_A", "pointing", (0.05, 0.05, 0.05), 600.0),
+        ("PT_B", "pointing", (0.08, 0.02, 0.03), 600.0),
+    ]
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(ROOT, "results")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"baseline_matrix_{ts}.txt")
+    lines = [
+        "BASELINE_MATRIX",
+        f"K_BDOT={BASELINE_KBDOT}",
+        f"K_P={BASELINE_KP}",
+        f"K_I={BASELINE_KI}",
+        f"K_D={BASELINE_KD}",
+        "",
+    ]
+
+    print("\n" + "=" * 80)
+    print("BASELINE MATRIX (AUTO MODE, 600s)")
+    print("=" * 80)
+    for name, scenario, omega, duration in cases:
+        run = run_sim(
+            scenario=scenario,
+            force_mode="auto",
+            kbdot=BASELINE_KBDOT,
+            kp=BASELINE_KP,
+            ki=BASELINE_KI,
+            kd=BASELINE_KD,
+            initial_omega=omega,
+            duration=duration,
+        )
+        run.score = composite_score(run, required_mode=None)
+        line = f"{name}: {format_result(run)}"
+        print(line)
+        lines.append(line)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"Baseline snapshot saved: {out_path}")
+    return out_path
+
+
 def run_spin_search(kbdot: float) -> Tuple[Tuple[float, float], List[RunResult]]:
     cases = [
         ("detumble", (0.3, 0.1, 0.4), 90.0),
@@ -434,9 +516,9 @@ def run_pointing_search(kbdot: float) -> Tuple[Tuple[float, float, float], List[
         ("pointing", (0.03, 0.07, 0.04), 120.0),
     ]
 
-    kp_vals = logspace(3e-4, 3e-1, 10)
-    kd_vals = logspace(3e-4, 3e-1, 10)
-    ki_vals = [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4]
+    kp_vals = logspace(5e-4, 4e-3, 10)
+    kd_vals = logspace(8e-2, 3.5e-1, 10)
+    ki_vals = [0.0, 2e-6, 1e-5, 3e-5, 6e-5, 1e-4, 1.5e-4]
 
     coarse_results = []
     total = len(kp_vals) * len(kd_vals) * len(ki_vals)
@@ -571,19 +653,16 @@ def main() -> None:
     print("Objective: flight-ready balance")
     print("=" * 80)
 
-    # Stage A: Detumble gain
-    best_kbdot, detumble_results = run_detumble_search()
-    summarize_top("Detumble top candidates", detumble_results)
+    # Stage A: locked baseline and reproducibility snapshot
+    run_baseline_matrix_snapshot()
+    best_kbdot = BASELINE_KBDOT
+    best_spin = (BASELINE_C_DAMP, BASELINE_I_VIRTUAL)
 
-    # Stage B: True Kane parameters (forced spin)
-    best_spin, spin_results = run_spin_search(best_kbdot)
-    summarize_top("Spin/Kane top candidates", spin_results)
-
-    # Stage C: Pointing PID (forced pointing)
+    # Stage B: Pointing PID (forced pointing), with K_BDOT held fixed
     best_pid, pointing_results = run_pointing_search(best_kbdot)
     summarize_top("Pointing top candidates", pointing_results)
 
-    # Stage D: Integrated validation in auto mode
+    # Stage C: Integrated validation in auto mode
     integrated = integrated_validation(best_kbdot, best_spin, best_pid)
 
     print("\n" + "=" * 80)

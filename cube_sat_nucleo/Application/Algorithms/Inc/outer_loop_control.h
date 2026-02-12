@@ -38,6 +38,7 @@ void OuterLoop_Init(void);
 void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float dt);
 void OuterLoop_SetMode(adcs_mode_t mode);
 adcs_mode_t OuterLoop_GetMode(void);
+uint8_t OuterLoop_GetTelemetryByte(void);
 void OuterLoop_SetForcedMode(uint8_t force_mode_code);
 void OuterLoop_ResetControllerState(void);
 void OuterLoop_SetSpinParams(float c_damp, float i_virtual);

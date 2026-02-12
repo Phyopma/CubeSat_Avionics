@@ -11,6 +11,7 @@
 // Private State Variables
 PI_Config_t pi_x, pi_y, pi_z;
 mtq_state_t state;
+static float runtime_voltage_limit = PIL_MAX_VOLTAGE;
 
 #ifndef SIMULATION_MODE
 static float filtered_current_z = 0.0f; // Only Z has real sensor for now
@@ -21,6 +22,34 @@ volatile uint8_t sim_data_ready = 0;
 
 void InnerLoop_Update_SimDataAvailable(void) {
     sim_data_ready = 1;
+}
+
+static float ClampF(float x, float lo, float hi) {
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
+
+void InnerLoop_SetVoltageLimit(float v_limit)
+{
+    float clamped = ClampF(v_limit, 0.5f, 12.0f);
+    runtime_voltage_limit = clamped;
+
+    pi_x.limMax = clamped;
+    pi_x.limMin = -clamped;
+    pi_y.limMax = clamped;
+    pi_y.limMin = -clamped;
+    pi_z.limMax = clamped;
+    pi_z.limMin = -clamped;
+
+    pi_x.integrator = ClampF(pi_x.integrator, pi_x.limMin, pi_x.limMax);
+    pi_y.integrator = ClampF(pi_y.integrator, pi_y.limMin, pi_y.limMax);
+    pi_z.integrator = ClampF(pi_z.integrator, pi_z.limMin, pi_z.limMax);
+}
+
+float InnerLoop_GetVoltageLimit(void)
+{
+    return runtime_voltage_limit;
 }
 
 void InnerLoop_Init(void)
@@ -34,6 +63,7 @@ void InnerLoop_Init(void)
     PI_Init(&pi_x, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
     PI_Init(&pi_y, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
     PI_Init(&pi_z, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
+    InnerLoop_SetVoltageLimit(PIL_MAX_VOLTAGE);
 }
 
 void InnerLoop_SetTargetCurrent(float x, float y, float z)
@@ -49,9 +79,9 @@ void InnerLoop_Update(void)
 #ifdef MTQ_MODE_OPEN_LOOP
     // === MODE A: OPEN LOOP (Active) ===
     // Physics Model: V = I * R
-    state.command_voltage_x = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_x * MTQ_COIL_RESISTANCE));
-    state.command_voltage_y = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_y * MTQ_COIL_RESISTANCE));
-    state.command_voltage_z = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_z * MTQ_COIL_RESISTANCE));
+    state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
+    state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
+    state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
 #ifdef SIMULATION_MODE
@@ -67,9 +97,9 @@ void InnerLoop_Update(void)
         if (sim_input.debug_flags & 0x01) {
             // === OPEN LOOP OVERRIDE (Debug) ===
             // Force V = I * R (Bypassing PI)
-            state.command_voltage_x = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_x * MTQ_COIL_RESISTANCE));
-            state.command_voltage_y = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_y * MTQ_COIL_RESISTANCE));
-            state.command_voltage_z = fmaxf(-MAX_OUTPUT_VOLTAGE, fminf(MAX_OUTPUT_VOLTAGE, state.target_current_z * MTQ_COIL_RESISTANCE));
+            state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
+            state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
+            state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
         } else {
             // === CLOSED LOOP (PI) ===
             state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
@@ -87,7 +117,7 @@ void InnerLoop_Update(void)
         sim_output.command_voltage_x = state.command_voltage_x;
         sim_output.command_voltage_y = state.command_voltage_y;
         sim_output.command_voltage_z = state.command_voltage_z;
-        sim_output.adcs_mode = (uint8_t)OuterLoop_GetMode();
+        sim_output.adcs_mode = OuterLoop_GetTelemetryByte();
         
         HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
         last_telemetry_tick = current_tick;
@@ -120,9 +150,9 @@ void InnerLoop_Update(void)
     // 3. Apply Command to H-Bridge Drivers
     // Axis 0 = X, 1 = Y, 2 = Z
     // This MUST run every 1ms to keep PWM active/updated
-    HBridge_SetVoltage(0, state.command_voltage_x, MAX_OUTPUT_VOLTAGE);
-    HBridge_SetVoltage(1, state.command_voltage_y, MAX_OUTPUT_VOLTAGE);
-    HBridge_SetVoltage(2, state.command_voltage_z, MAX_OUTPUT_VOLTAGE);
+    HBridge_SetVoltage(0, state.command_voltage_x, runtime_voltage_limit);
+    HBridge_SetVoltage(1, state.command_voltage_y, runtime_voltage_limit);
+    HBridge_SetVoltage(2, state.command_voltage_z, runtime_voltage_limit);
 }
 
 mtq_state_t InnerLoop_GetState(void)

@@ -26,12 +26,23 @@
 #define C_DAMP                0.0016405224f  // HITL tuned Kane damping coefficient
 #define I_VIRTUAL             0.0083109405f  // HITL tuned virtual inertia for damper
 
-// Inertial Pointing (PD Controller)
-// HITL tuned pointing defaults (flight-ready balance objective)
-#define K_P                   0.00072658465f  // Proportional gain (Nm per rad error)
-#define K_I                   0.000084290285f // Integral gain (Nm per rad-s error)
-#define K_D                   0.14633999f     // Derivative gain (Nm per rad/s)
-#define MAX_INTEGRAL_ERROR    1.0f     // Anti-windup limit (rad-s)
+// Inertial Pointing (PD/PID Controller)
+// Locked baseline for reproducible HITL comparisons.
+#define K_P                   0.0012f   // Proportional gain (Nm per rad error)
+#define K_I                   0.00003f  // Integral gain (Nm per rad-s error)
+#define K_D                   0.17f     // Derivative gain (Nm per rad/s)
+#define MAX_INTEGRAL_ERROR    1.0f      // Anti-windup limit (rad-s)
+
+// Pointing integrator management (anti-windup + conditional integration)
+#define POINTING_INT_LEAK               0.08f   // 1/s integral bleed when not integrating
+#define POINTING_INT_ENABLE_ERR_DEG     60.0f   // Integrate only below this pointing error
+#define POINTING_INT_ENABLE_OMEGA       0.08f   // Integrate only below this body-rate norm
+
+// Pointing gain scheduling for large-angle recovery
+#define POINTING_SCHED_ERR_LOW_DEG      12.0f   // Below this angle use low-angle gains
+#define POINTING_SCHED_ERR_HIGH_DEG     80.0f   // Above this angle use high-angle gains
+#define POINTING_KP_SCALE_LOW           1.35f   // Kp multiplier in low-angle regime
+#define POINTING_KD_SCALE_HIGH          1.90f   // Kd multiplier in high-angle regime
 
 // State Machine Thresholds
 #define DETUMBLE_OMEGA_THRESH 0.03f     // rad/s (Relaxed to enter Pointing sooner)

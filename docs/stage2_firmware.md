@@ -48,7 +48,7 @@ typedef struct {
 $$M = k_{bdot} \cdot (\omega \times B_{body})$$
 
 - Uses gyro-estimated B-dot: $\dot{B}_{est} = \omega \times B$ (avoids noisy finite differencing)
-- Gain `K_BDOT = 200,000` ensures magnetorquer saturation for aggressive damping (positive sign required for correct damping)
+- Gain `K_BDOT = 400,000` provides strong damping authority in current HITL tuning (positive sign required for correct damping)
 - **Singularity avoidance**: When $|\omega| > 0.1$ rad/s but $|\dot{B}_{est}| < 0.1 \cdot |\omega| \cdot |B|$, a kick (0.1 Am²) is applied on the axis **least aligned** with B to generate maximum torque
 
 **Sign convention note:** Verified HITL: positive `k_bdot` produces correct damping behavior. Previously suggested negative sign was incorrect for this coordinate system.
@@ -93,7 +93,7 @@ OuterLoop_Update(sensors, &output, dt)
     → output.dipole_request = {mx, my, mz}  [Am²]
 
 target_current = dipole_request * MTQ_DIPOLE_TO_AMP  [A]
-    → MTQ_DIPOLE_TO_AMP = 1/2.88  (datasheet: 2.88 Am²/A)
+    → In HITL, runtime dipole mapping can be overridden from host packet
 
 InnerLoop_SetTargetCurrent(ix, iy, iz)
     → PI_Update(&pi_x, target, measured) → command_voltage
@@ -102,16 +102,42 @@ HBridge_SetVoltage(axis, voltage, max_voltage)
     → PWM output
 ```
 
+## HITL Runtime Calibration Override (Auto)
+
+In `SIMULATION_MODE`, firmware consumes two runtime calibration fields from each host packet:
+
+- `max_voltage_mV` (`uint16`)
+- `dipole_strength_milli` (`uint16`)
+
+Behavior:
+
+1. Runtime voltage clamp is applied through inner loop API:
+   - `InnerLoop_SetVoltageLimit(max_voltage_mV * 1e-3)`
+2. Runtime dipole conversion is applied in main loop:
+   - `mtq_dipole_to_amp_runtime = 1.0 / (dipole_strength_milli * 1e-3)`
+3. No extra enable flag is used; override is always active in HITL packet flow.
+
+Host defaults when CLI overrides are omitted:
+
+- `max_voltage = 3.3 V`
+- `dipole_strength = 2.88 Am²/A`
+
+Packet schema note:
+
+- Input packet format is now `<H3f3f3f4f5fBHH>`
+- Input packet size is now `79` bytes
+- Host and firmware must be version-matched.
+
 ## Key Configuration (`config.h`)
 
 | Parameter | Value | Description |
 |---|---|---|
-| `K_BDOT` | 200,000 | B-dot gain (positive = damping) |
-| `C_DAMP` | 0.05 | Kane virtual damping coefficient |
-| `I_VIRTUAL` | 0.01 | Kane virtual damper inertia |
-| `K_P` | 0.100 | Pointing proportional |
-| `K_I` | 0.0001 | Pointing integral |
-| `K_D` | 0.100 | Pointing derivative |
+| `K_BDOT` | 400,000 | B-dot gain (positive = damping) |
+| `C_DAMP` | 0.0016405224 | Kane virtual damping coefficient |
+| `I_VIRTUAL` | 0.0083109405 | Kane virtual damper inertia |
+| `K_P` | 0.0012 | Pointing proportional |
+| `K_I` | 0.00003 | Pointing integral |
+| `K_D` | 0.17 | Pointing derivative |
 | `MAX_INTEGRAL_ERROR` | 1.0 | Anti-windup clamp |
 | `DETUMBLE_OMEGA_THRESH` | 0.03 rad/s | Mode transition |
 | `POINTING_OMEGA_THRESH` | 0.15 rad/s | Safety fallback |
