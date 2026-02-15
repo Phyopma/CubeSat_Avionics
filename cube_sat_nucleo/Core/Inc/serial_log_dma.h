@@ -20,6 +20,9 @@
 
 void serial_log_init(UART_HandleTypeDef *huart);
 void log_printf_dma(const char *fmt, ...);
+void log_printf_async(const char *fmt, ...);
+void serial_log_process_tx(void);
+uint32_t serial_log_drop_count(void);
 
 
 #endif /* INC_SERIAL_LOG_DMA_H_ */

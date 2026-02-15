@@ -22,5 +22,8 @@ void CurrentSensor_Init(void);
 
 // Returns current in Amps
 float CurrentSensor_Read_Amps(void);
+void CurrentSensor_SubmitSampleRequest(void);
+void CurrentSensor_RunAsyncSample(void);
+int CurrentSensor_GetLatestSample(float *amps, uint32_t *age_ms, uint32_t now_ms);
 
 #endif

@@ -78,7 +78,7 @@ SOFTWARE PROJECT
 
 Project Settings : 
 Project Name : cube_sat_nucleo
-Project Folder : /Users/phyopyae/eecs159.tmp/cube_sat_nucleo
+Project Folder : /Users/phyopyae/eecs159/cube_sat_nucleo
 Toolchain / IDE : STM32CubeIDE
 Firmware Package Name and Version : STM32Cube FW_L4 V1.18.1
 

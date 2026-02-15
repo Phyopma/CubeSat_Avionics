@@ -11,6 +11,7 @@
 PI_Config_t pi_ctrl;
 mtq_state_t state;
 static float filtered_current = 0.0f;
+static volatile uint8_t g_state_valid = 0U;
 
 //void InnerLoop_PrintTelemetry(char *buffer)
 //{
@@ -43,6 +44,13 @@ void InnerLoop_SetTargetCurrent(float current_amps)
 
 }
 
+int InnerLoop_SetTargetCurrentAsync(float current_amps, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    InnerLoop_SetTargetCurrent(current_amps);
+    return 1;
+}
+
 // This function runs inside the TIM6 Interrupt (1kHz)
 void InnerLoop_Update(void)
 {
@@ -73,8 +81,17 @@ void InnerLoop_Update(void)
     HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
     
 #else
-	// A. Read Raw Hardware Value (Noisy!)
-	float raw_val = CurrentSensor_Read_Amps();
+    // Request a fresh sensor sample for next control cycle.
+    CurrentSensor_SubmitSampleRequest();
+
+	// A. Read latest cached hardware sample from sensor task.
+	float raw_val = 0.0f;
+    uint32_t sample_age_ms = 0U;
+    if (!CurrentSensor_GetLatestSample(&raw_val, &sample_age_ms, HAL_GetTick())) {
+        state.command_voltage = 0.0f;
+        HBridge_SetVoltage(state.command_voltage, MAX_OUTPUT_VOLTAGE);
+        return;
+    }
 
 	// B. Inject Sign (Your polarity logic)
 	float signed_raw = (state.command_voltage < 0.0f) ? -1.0f * fabsf(raw_val) : fabsf(raw_val);
@@ -90,14 +107,30 @@ void InnerLoop_Update(void)
 	// D. Run PI on the SMOOTH value
 	// Now the PI controller won't panic because the input is smooth.
 	state.command_voltage = PI_Update(&pi_ctrl, state.target_current, state.measured_current);
+
+    // Fail-safe: stale sample -> command safe zero output.
+    if (sample_age_ms > 20U) {
+        state.command_voltage = 0.0f;
+    }
 #endif
 #endif
 
     // 3. Apply Command to H-Bridge
     HBridge_SetVoltage(state.command_voltage, MAX_OUTPUT_VOLTAGE);
+    g_state_valid = 1U;
 }
 
 mtq_state_t InnerLoop_GetState(void)
 {
     return state;
+}
+
+int InnerLoop_GetStateSnapshot(mtq_state_t *out, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    if (out == NULL || g_state_valid == 0U) {
+        return 0;
+    }
+    *out = state;
+    return 1;
 }

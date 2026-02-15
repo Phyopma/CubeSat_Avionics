@@ -32,6 +32,7 @@
 #include "imu_bno085.h"
 #include "inner_loop_control.h"
 #include "teleplot.h"
+#include "app_runtime.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,14 +61,6 @@
 /* USER CODE BEGIN PV */
 bno085_t imu;
 
-
-#if ENABLE_ADT7420
-static ADT7420_Handle adt7420_sensor;
-#endif
-
-#if ENABLE_INNER_LOOP_CONTROL
-mtq_state_t data;
-#endif
 
 #ifdef SIMULATION_MODE
 volatile SimPacket_Input_t sim_input;
@@ -123,114 +116,17 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-#ifndef SIMULATION_MODE
   serial_log_init(&huart2);
-  log_printf_dma("UART DMA logger online\r\n");
-#endif
+  log_printf_async("UART DMA logger online");
+  AppRuntime_Init();
 
-  // ADT7420 begin
-#if ENABLE_ADT7420 && !defined(SIMULATION_MODE)
-  log_printf_dma("ADT7420 bring-up\r\n");
-
-  uint8_t addr7 = 0x4B; // set to match JP2/JP1
-
-  if (ADT7420_Init(&adt7420_sensor, &hi2c1, addr7) != HAL_OK)
-  {
-    log_printf_dma("ADT7420 init failed (address 0x%02X)\r\n", addr7);
-    Error_Handler();
-  }
-
-  uint8_t id = 0, cfg = 0;
-  ADT7420_ReadID(&adt7420_sensor, &id);
-  ADT7420_ReadConfig(&adt7420_sensor, &cfg);
-  log_printf_dma("ADT7420 ID=0x%02X (expect 0xCB), CONFIG=0x%02X\r\n", id, cfg);
-  // ADT7420_Set16Bit(&adt7420_sensor, 0); // uncomment to force 13-bit
-#endif
-  // ADT7420 end
-
-  // IMU Begin
-#if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION)
-#ifndef SIMULATION_MODE
-  BNO085_Log("System Booting...\r\n");
-
-  // 1. Initialize the Sensor
-  while (!BNO085_Begin(&imu))
-  {
-    BNO085_Log("BNO085 Init FAILED. Halting.\r\n");
-  }
-  BNO085_Log("BNO085 Initialized.\r\n");
-
-
-//    10000us = 10ms = 100Hz
-
-#if ENABLE_BNO085_ROTATION_VECTOR
-  BNO085_Log("Enabling Rotation Vector...\r\n");
-  BNO085_EnableRotationVector(&imu, 10000);
-//  while (!BNO085_WaitForAck(&imu)) {
-//  	BNO085_Log("Enabling Rotation Vector...\r\n");
-//  	BNO085_EnableRotationVector(&imu, 10000);
-//  	}
-#endif
-
-#if ENABLE_BNO085_GAME_ROTATION_VECTOR
-  BNO085_Log("Enabling Game Rotation Vector...\r\n");
-  BNO085_EnableGameRotationVector(&imu, 10000);
-  while (!BNO085_WaitForAck(&imu)) {
-	  BNO085_Log("Enabling Game Rotation Vector...\r\n");
-	  BNO085_EnableGameRotationVector(&imu, 10000);
-  }
-#endif
-
-#if ENABLE_BNO085_GYROSCOPE
-  BNO085_Log("Enabling Gyroscope...\r\n");
-  BNO085_EnableGyroscope(&imu, 10000);
-	while (!BNO085_WaitForAck(&imu)) {
-	  BNO085_Log("Enabling Gyroscope...\r\n");
-	 BNO085_EnableGyroscope(&imu, 10000);
-	}
-#endif
-
-#if ENABLE_BNO085_MAGNETOMETER
-  BNO085_Log("Enabling Magnetometer...\r\n");
-  BNO085_EnableMagnetometer(&imu, 10000);
-	while (!BNO085_WaitForAck(&imu)) {
-	  BNO085_Log("Enabling Magnetometer...\r\n");
-	  BNO085_EnableMagnetometer(&imu, 10000);
-	}
-#endif
-
-#if ENABLE_BNO085_LINEAR_ACCELERATION
-  BNO085_Log("Enabling Linear Accel...\r\n");
-  BNO085_EnableLinearAccelerometer(&imu, 10000);
-	while (!BNO085_WaitForAck(&imu)) {
-	  BNO085_Log("Enabling Linear Accel...\r\n");
-	  BNO085_EnableLinearAccelerometer(&imu, 10000);
-	}
-#endif
-
-  BNO085_Log("Sensors Enabled. Starting Loop...\r\n");
-//  uint32_t last_print_time = 0;
-#endif // !SIMULATION_MODE
-
-#endif
-
-#if ENABLE_INNER_LOOP_CONTROL
-  // Initialize the Inner Loop (Starts Drivers & Math)
-  InnerLoop_Init();
-
-  // Start the Control Loop Timer (TIM6)
+  // Timer is used as deterministic control tick source.
   HAL_TIM_Base_Start_IT(&htim6);
 
-  // TEST: Request 50mA Current
-  InnerLoop_SetTargetCurrent(0.03f);
-
 #ifdef SIMULATION_MODE
-  // Start receiving the first Simulation Packet
   HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
 #endif
-
-
-#endif
+  AppRuntime_Start();
 
   /* USER CODE END 2 */
 
@@ -238,136 +134,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-#if ENABLE_ADT7420
-    float c = 0.0f;
-    if (ADT7420_ReadCelsius(&adt7420_sensor, &c) == HAL_OK)
-    {
-      log_printf_dma("Temp = %.3f C\r\n", c);
-    }
-    else
-    {
-      log_printf_dma("Temp read error\r\n");
-    }
-    HAL_Delay(100);
-#endif
-
-#if ENABLE_INNER_LOOP_CONTROL
-    // // 1. Prepare Data
-    // InnerLoop_PrintTelemetry(msg_buffer);
-
-    // // 2. Send via DMA (Non-blocking)
-    // HAL_UART_Transmit_DMA(&huart2, (uint8_t *)msg_buffer, strlen(msg_buffer));
-
-    data = InnerLoop_GetState();
-
-    // 2. Send to Teleplot
-#ifndef SIMULATION_MODE
-	// Plot the Target Current (Blue line)
-	Teleplot_Update("Target", data.target_current * 1000);
-
-	// Plot Measured Current (Green line - Essential for Tuning!)
-	Teleplot_Update("Current", data.measured_current * 1000);
-
-	Teleplot_Update("Error", (data.target_current - data.measured_current) * 1000);
-
-	// Plot the Voltage being applied (Red line)
-	Teleplot_Update("Voltage", data.command_voltage);
-    HAL_Delay(50);
-#endif // !SIMULATION_MODE
-
-
-
-//    // 1. MANUALLY Force 5.0V output (Full Power)
-//        // This bypasses the PI controller completely.
-//        HBridge_SetVoltage(voltage, 5.0f);
-//
-//        // 2. Read the sensor directly
-//
-//        float raw_amps = CurrentSensor_Read_Amps();
-//
-//        // 3. Teleplot Debugging
-//        // "ForceVolts" should show 5.0
-//        Teleplot_Update("ForceVolts", voltage);
-//        // "SensAmps" will show the real sensor reading
-//        Teleplot_Update("SensAmps", raw_amps);
-//
-//        // 4. Console Log for sanity (Check Serial Terminal if Teleplot is confusing)
-//        if (raw_amps == 0.0f) {
-//            // If this prints, your sensor is either broken, address is wrong, or shunt is blown.
-//            // Or your battery is unplugged.
-//            // log_printf_dma("Reading 0.0 Amps...\r\n");
-//        }
-//
-//        HAL_Delay(100);
-
-
-#endif
+    AppRuntime_RunOnce();
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
-#if (ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR || ENABLE_BNO085_GYROSCOPE || ENABLE_BNO085_MAGNETOMETER || ENABLE_BNO085_LINEAR_ACCELERATION) && !defined(SIMULATION_MODE)
-    BNO085_Service(&imu, NULL);
-//
-//    if (HAL_GetTick() - last_print_time > 200)
-//    {
-//      last_print_time = HAL_GetTick();
-
-      // --- A. Rotation Vector (Quat) ---
-#if ENABLE_BNO085_ROTATION_VECTOR || ENABLE_BNO085_GAME_ROTATION_VECTOR
-      bno085_quat_t q;
-#endif
-
-#if ENABLE_BNO085_ROTATION_VECTOR
-      if (BNO085_GetQuaternion(&imu, &q))
-      {
-        // Log: [RV] R:1.000 I:0.000 J:0.000 K:0.000 (Acc: 0.1)
-        BNO085_Log("[RV] R:%.3f I:%.3f J:%.3f K:%.3f (Acc: %.2f)\r\n",
-                   q.real, q.i, q.j, q.k, q.accuracy_rad);
-      }
-#endif
-
-      // --- B. Game Rotation Vector (Quat - No Mag) ---
-#if ENABLE_BNO085_GAME_ROTATION_VECTOR
-      if (BNO085_GetGameQuaternion(&imu, &q))
-      {
-        // Log: [GM] R:1.000 I:0.000 ...
-        BNO085_Log("[GM] R:%.3f I:%.3f J:%.3f K:%.3f\r\n",
-                   q.real, q.i, q.j, q.k);
-      }
-#endif
-
-      // --- C. Gyroscope (rad/s) ---
-#if ENABLE_BNO085_GYROSCOPE
-      bno085_vec3_t g;
-      if (BNO085_GetGyroscope(&imu, &g))
-      {
-        // Log: [GY] X:0.01 Y:-0.02 Z:0.00
-        BNO085_Log("[GY] X:%.3f Y:%.3f Z:%.3f\r\n", g.x, g.y, g.z);
-      }
-#endif
-
-      // --- D. Magnetometer (uTesla) ---
-#if ENABLE_BNO085_MAGNETOMETER
-      bno085_vec3_t m;
-      if (BNO085_GetMagnetometer(&imu, &m))
-      {
-        // Log: [MG] X:20.5 Y:10.1 Z:-40.2
-        BNO085_Log("[MG] X:%.1f Y:%.1f Z:%.1f\r\n", m.x, m.y, m.z);
-      }
-#endif
-
-      // --- E. Linear Acceleration (m/s^2) ---
-#if ENABLE_BNO085_LINEAR_ACCELERATION
-      bno085_vec3_t a;
-      if (BNO085_GetLinearAcceleration(&imu, &a))
-      {
-        // Log: [LA] X:0.1 Y:0.0 Z:9.8
-        BNO085_Log("[LA] X:%.2f Y:%.2f Z:%.2f\r\n", a.x, a.y, a.z);
-      }
-#endif
-//    }
-#endif
-
   }
 
   /* USER CODE END 3 */
@@ -417,16 +186,13 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-#if ENABLE_INNER_LOOP_CONTROL
-// Timer 6 Interrupt - Runs exactly every 1ms (1kHz)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM6)
   {
-    InnerLoop_Update();
+    AppRuntime_OnControlTickFromISR();
   }
 }
-#endif
 
 #ifdef SIMULATION_MODE
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)

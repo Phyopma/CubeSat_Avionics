@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
+#include "serial_log_dma.h"
 
 // 100ms timeout for blocking SPI
 #define SPI_TIMEOUT 100
@@ -380,6 +381,8 @@ void BNO085_Log(const char* fmt, ...) {
     va_start(args, fmt);
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    while (HAL_UART_GetState(&huart2) != HAL_UART_STATE_READY);
-    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
+    if (len <= 0) {
+        return;
+    }
+    log_printf_async("%s", buf);
 }

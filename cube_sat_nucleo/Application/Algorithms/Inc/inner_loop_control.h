@@ -23,7 +23,9 @@ typedef struct
 // === API Functions ===
 void InnerLoop_Init(void);
 void InnerLoop_SetTargetCurrent(float current_amps);
+int InnerLoop_SetTargetCurrentAsync(float current_amps, uint32_t timeout_ms);
 void InnerLoop_Update(void);          // Must be called at 1kHz
 mtq_state_t InnerLoop_GetState(void); // for plotting
+int InnerLoop_GetStateSnapshot(mtq_state_t *out, uint32_t timeout_ms);
 
 #endif
