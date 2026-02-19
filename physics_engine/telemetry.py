@@ -99,6 +99,45 @@ class TelemetryManager:
             self.sock.sendto(packet.encode(), self.addr)
         except:
             pass
+
+    def send_3d_plane(self, name, normal_vector, color, size=10.0, opacity=0.3):
+        """
+        Visualize a plane perpendicular to the given normal vector.
+        The plane is represented as a very thin, large cube.
+        
+        Args:
+            name: Unique name for this plane (use "name,widget" to group in same widget)
+            normal_vector: Vector [nx, ny, nz] normal to the plane
+            color: Color string (e.g. "red", "#ff0000")
+            size: Width and Height of the plane (square)
+            opacity: Transparency level (0=invisible, 1=opaque)
+        """
+        normal = np.array(normal_vector)
+        length = np.linalg.norm(normal)
+        if length < 1e-9:
+            return
+
+        # Calculate rotation to align Z-axis with normal vector
+        quat = self._direction_to_quaternion(normal)
+        
+        # Dimensions: W=size, H=size, D=thin (along normal)
+        thickness = 0.01 
+        
+        # Position at origin (unless we want to offset it, but usually B-field passes through origin)
+        pos = (0, 0, 0)
+
+        # Format: 3D|name:S:cube:P:x:y:z:Q:x:y:z:w:W:width:H:height:D:depth:C:color:O:opacity
+        packet = (
+            f"3D|{name}:S:cube"
+            f":P:{pos[0]}:{pos[1]}:{pos[2]}"
+            f":Q:{quat[1]:.4f}:{quat[2]:.4f}:{quat[3]:.4f}:{quat[0]:.4f}"
+            f":W:{size}:H:{size}:D:{thickness}"
+            f":C:{color}:O:{opacity}"
+        )
+        try:
+            self.sock.sendto(packet.encode(), self.addr)
+        except:
+            pass
     
     def _direction_to_quaternion(self, direction):
         """

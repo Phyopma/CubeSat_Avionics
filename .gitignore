@@ -79,3 +79,4 @@ build/
 .agent
 .DS_Store
 COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilizati.pdf
+*/__pycache__

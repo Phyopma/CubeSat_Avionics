@@ -17,10 +17,10 @@ from comms import SerialInterface
 from telemetry import TelemetryManager, VisualizerSender
 
 # --- Configuration ---
-SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
+SERIAL_PORT = "/dev/cu.usbmodem1103"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz) - Default - Default - Default
-TELEPLOT_ADDR = ("teleplot.fr", 45076)
+TELEPLOT_ADDR = ("teleplot.fr", 61656)
 FW_CONFIG_PATH = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
@@ -375,6 +375,17 @@ def main():
                     1 - 2*(q1**2 + q2**2)
                 ])
                 tel.send_3d_vector("BodyZ,3D", (0,0,0), body_z_inertial, "#00ffff", scale=2.5, thickness=0.08)
+                
+                # B-field Plane Integration
+                # Visualize plane perpendicular to B-field (where torque can be produced)
+                tel.send_3d_plane("B-Plane,3D", B_inertial, "#FFFFFF", size=5.0, opacity=0.3)
+                
+                # Visualize Applied Torque (rotated to inertial frame)
+                # torque_applied is in body frame. Body-to-Inertial DCM = sat._quat_to_dcm(q)
+                R_body_to_inertial = sat._quat_to_dcm(q)
+                torque_inertial = R_body_to_inertial @ torque_applied
+                # Scale up torque for visibility (approx 10^-5 Nm -> scale by 10^5)
+                tel.send_3d_vector("Torque,3D", (0,0,0), torque_inertial, "#ff00ff", scale=1e5, thickness=0.1)
                 
                 # Stability check: τ·ω < 0 means damping
                 work_rate = np.dot(torque_applied, w)
