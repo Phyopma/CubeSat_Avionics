@@ -42,6 +42,9 @@ uint8_t OuterLoop_GetTelemetryByte(void);
 void OuterLoop_SetForcedMode(uint8_t force_mode_code);
 void OuterLoop_ResetControllerState(void);
 void OuterLoop_SetSpinParams(float c_damp, float i_virtual);
+void OuterLoop_GetLastDipoleCommand(vec3_t *out);
+void OuterLoop_GetLastTorqueRaw(vec3_t *out);
+void OuterLoop_GetLastTorqueProjected(vec3_t *out);
 
 /**
  * @brief Update control gains dynamically (e.g. from telemetry/sim)

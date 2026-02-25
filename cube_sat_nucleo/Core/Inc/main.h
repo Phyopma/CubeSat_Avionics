@@ -101,7 +101,17 @@ typedef struct __attribute__((packed)) {
                         // bits0-1 mode (0:Idle,1:Detumble,2:Spin,3:Pointing),
                         // bit2 integral clamp/freeze flag,
                         // bits3-7 projection-loss quantized [0..31]
-    uint8_t padding[3]; // Align to 4-byte boundaries
+    int16_t m_cmd_q15_x;
+    int16_t m_cmd_q15_y;
+    int16_t m_cmd_q15_z;
+    int16_t tau_raw_q15_x;
+    int16_t tau_raw_q15_y;
+    int16_t tau_raw_q15_z;
+    int16_t tau_proj_q15_x;
+    int16_t tau_proj_q15_y;
+    int16_t tau_proj_q15_z;
+    uint8_t telemetry_flags; // bits0-3: packet version, bit4: m saturation,
+                             // bit5: tau_raw saturation, bit6: tau_proj saturation
 } SimPacket_Output_t;
 
 extern volatile SimPacket_Input_t sim_input;

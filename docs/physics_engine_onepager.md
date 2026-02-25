@@ -54,7 +54,8 @@ When it becomes concerning:
 
 | Category | Variable | Current value | Why critical |
 |---|---|---:|---|
-| Structure | `Ixx, Iyy, Izz` | `0.00833, 0.00833, 0.00333 kg*m^2` | Sets rotational response and gain validity |
+| Structure | `Px, Py, Pz` | `0.011867, 0.012575, 0.012867 kg*m^2` | Principal moments loaded from W26 constants |
+| Structure | `I_body` | `R*diag(P)*R^T` | Full body-frame tensor used by dynamics |
 | Power | `PIL_MAX_VOLTAGE` / host `--max-voltage` | `3.3 V` | Sets max current slew and authority |
 | Power | `R` / `Lxy` / `Lz` | `28 ohm / 25mH / 12mH` | Determines current dynamics + power draw |
 | Actuator | `dipole_strength` | `2.88 A*m^2/A` | Current-to-dipole conversion |
@@ -84,7 +85,7 @@ When it becomes concerning:
 ## 6) Quick recommendations before team sync
 
 1. Host now auto-overrides firmware voltage/dipole in HITL every packet; keep host defaults at `3.3/2.88` unless intentionally testing different authority.
-2. Confirm inertia matrix against latest mass layout.
+2. Confirm W26 principal-axis orientation against latest mass layout and sign conventions.
 3. If power team expects large thermal drift, add temperature-aware `R(T)` in model.
 4. Keep evaluating `PT_B` with 600s runs; prioritize reducing `ProjLoss`/`IntClamp`.
 
@@ -94,6 +95,12 @@ When it becomes concerning:
 - Tail fields are:
   - `max_voltage_mV`
   - `dipole_strength_milli`
+- Host output payload format (after sync bytes) is `<3fB9hB>` (32 bytes payload, 34 bytes including header).
+- Output includes:
+  - commanded dipole (`m_cmd_q15`)
+  - raw desired torque (`tau_raw_q15`)
+  - projected torque (`tau_proj_q15`)
+  - `telemetry_flags` (version + saturation bits)
 - Host and firmware must be updated together for this schema.
 
 ## 8) Clickable references

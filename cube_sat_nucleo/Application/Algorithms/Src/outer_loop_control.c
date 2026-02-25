@@ -12,6 +12,9 @@ static float pointing_no_progress_time = 0.0f;
 static float pointing_best_error_deg = 180.0f;
 static float last_projection_loss = 0.0f;
 static uint8_t last_integral_limited = 0;
+static vec3_t last_m_cmd = {0.0f, 0.0f, 0.0f};
+static vec3_t last_tau_raw = {0.0f, 0.0f, 0.0f};
+static vec3_t last_tau_proj = {0.0f, 0.0f, 0.0f};
 
 static void ResetModeTransitionState(void) {
     detumble_ready_time = 0.0f;
@@ -46,6 +49,9 @@ void OuterLoop_Init(void) {
     forced_mode = CTRL_MODE_DETUMBLE;
     last_projection_loss = 0.0f;
     last_integral_limited = 0;
+    last_m_cmd = (vec3_t){0.0f, 0.0f, 0.0f};
+    last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+    last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
     ResetModeTransitionState();
 }
 
@@ -111,6 +117,11 @@ void OuterLoop_ResetControllerState(void) {
     ctrl.integral_error = (vec3_t){0, 0, 0};
     ctrl.w_damper = (vec3_t){0, 0, 0};
     ResetModeTransitionState();
+    last_m_cmd = (vec3_t){0.0f, 0.0f, 0.0f};
+    last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+    last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
+    last_projection_loss = 0.0f;
+    last_integral_limited = 0;
 
     // Reset to a deterministic baseline mode unless an explicit override is active.
     if (force_mode_enabled) {
@@ -135,7 +146,25 @@ void OuterLoop_SetGains(float k_bdot, float kp, float ki, float kd) {
     ctrl.integral_error = (vec3_t){0, 0, 0};
 }
 
-static vec3_t Control_BDot(vec3_t B, vec3_t w) {
+void OuterLoop_GetLastDipoleCommand(vec3_t *out) {
+    if (out != NULL) {
+        *out = last_m_cmd;
+    }
+}
+
+void OuterLoop_GetLastTorqueRaw(vec3_t *out) {
+    if (out != NULL) {
+        *out = last_tau_raw;
+    }
+}
+
+void OuterLoop_GetLastTorqueProjected(vec3_t *out) {
+    if (out != NULL) {
+        *out = last_tau_proj;
+    }
+}
+
+static vec3_t Control_BDot_Internal(vec3_t B, vec3_t w, uint8_t update_trace) {
     // Gyro-Based B-Dot: B_dot_body ~ -cross(w, B)
     // Damping Law: M = -k * B_dot = -k * (-cross(w, B)) = k * cross(w, B)
     vec3_t B_dot_estimated = Vec3_Cross(w, B);
@@ -168,7 +197,17 @@ static vec3_t Control_BDot(vec3_t B, vec3_t w) {
         m_cmd = Vec3_Add(m_cmd, Vec3_ScalarMult(kick_axis, 0.1f));
     }
 
+    if (update_trace) {
+        vec3_t tau_cmd = Vec3_Cross(m_cmd, B);
+        last_tau_raw = tau_cmd;
+        last_tau_proj = tau_cmd;
+    }
+
     return m_cmd;
+}
+
+static vec3_t Control_BDot(vec3_t B, vec3_t w) {
+    return Control_BDot_Internal(B, w, 1u);
 }
 
 static vec3_t Control_SpinStabilization(vec3_t B, vec3_t w) {
@@ -176,7 +215,11 @@ static vec3_t Control_SpinStabilization(vec3_t B, vec3_t w) {
     // tau_d = c * (w_body - w_damper)
     // tau_req = -Proj_perp_B(tau_d), then map to dipole via m = (B x tau_req) / |B|^2
     float B2 = Vec3_Dot(B, B);
-    if (B2 < 1e-12f) return (vec3_t){0, 0, 0};
+    if (B2 < 1e-12f) {
+        last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+        last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
+        return (vec3_t){0, 0, 0};
+    }
 
     float inv_b_mag = 1.0f / sqrtf(B2);
     vec3_t b_hat = Vec3_ScalarMult(B, inv_b_mag);
@@ -188,6 +231,8 @@ static vec3_t Control_SpinStabilization(vec3_t B, vec3_t w) {
     float tau_parallel = Vec3_Dot(tau_d, b_hat);
     vec3_t tau_perp = Vec3_Sub(tau_d, Vec3_ScalarMult(b_hat, tau_parallel));
     vec3_t tau_req = Vec3_ScalarMult(tau_perp, -1.0f);
+    last_tau_raw = tau_d;
+    last_tau_proj = tau_req;
 
     // Damper state: I_d * w_d_dot = c * (w - w_damper)
     float gain = ctrl.c_damp / fmaxf(ctrl.i_virtual, 1e-6f);
@@ -272,6 +317,8 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
     if (B2 < 1e-12f) {
         last_projection_loss = 1.0f;
         last_integral_limited = 1;
+        last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+        last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
         return (vec3_t){0, 0, 0};
     }
 
@@ -294,6 +341,8 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
 
     last_projection_loss = projection_loss;
     last_integral_limited = integral_limited;
+    last_tau_raw = tau_raw;
+    last_tau_proj = tau_proj;
 
     vec3_t m_point = Vec3_ScalarMult(Vec3_Cross(B, tau_proj), 1.0f / B2);
 
@@ -302,7 +351,7 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
     // to steer rates away from the stuck manifold.
     if (projection_loss > 0.80f) {
         float alpha = Clamp01((projection_loss - 0.80f) / 0.20f);
-        vec3_t m_bdot = Control_BDot(B, w);
+        vec3_t m_bdot = Control_BDot_Internal(B, w, 0u);
         m_point = Vec3_Add(
             Vec3_ScalarMult(m_point, 1.0f - alpha),
             Vec3_ScalarMult(m_bdot, alpha)
@@ -409,8 +458,11 @@ void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float d
         default:
             last_projection_loss = 0.0f;
             last_integral_limited = 0;
+            last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+            last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
             break;
     }
     
+    last_m_cmd = m_cmd;
     output->dipole_request = m_cmd;
 }

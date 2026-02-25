@@ -1,0 +1,48 @@
+{
+  "metadata": {
+    "source_doc_path": "/Users/phyopyae/eecs159/CubeSat Stats and Variables W26.pdf",
+    "reference_id": "w26",
+    "notes": "Structural and orbit constants transcribed from W26 source document."
+  },
+  "raw_source_values": {
+    "orbit": {
+      "semimajor_axis_km": 6928.14,
+      "inclination_deg": 97.5977,
+      "period_min": 95.65,
+      "raan_deg": 41.2
+    },
+    "center_of_mass_mm": {
+      "x": 0.24,
+      "y": 140.58,
+      "z": 0.94,
+      "frame_note": "Origin at geometric center of bottom 1U face"
+    },
+    "principal_axes": {
+      "ix": [0.0, 1.0, -0.04],
+      "iy": [-1.0, 0.0, -0.05],
+      "iz": [-0.05, 0.04, 1.0]
+    },
+    "principal_moments_g_mm2": {
+      "px": 11867257.57,
+      "py": 12575303.76,
+      "pz": 12866690.27
+    }
+  },
+  "si_values": {
+    "orbit": {
+      "semimajor_axis_m": 6928140.0,
+      "inclination_deg": 97.5977,
+      "period_s": 5739.0,
+      "raan_deg": 41.2
+    },
+    "principal_moments_kg_m2": {
+      "px": 0.01186725757,
+      "py": 0.01257530376,
+      "pz": 0.01286669027
+    }
+  },
+  "model_switches": {
+    "use_full_inertia_tensor": true,
+    "use_source_orbit_values": true
+  }
+}

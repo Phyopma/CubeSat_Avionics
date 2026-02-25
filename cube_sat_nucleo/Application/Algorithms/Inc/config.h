@@ -61,4 +61,10 @@
 // This constant converts dipole (A*m^2) to current (A)
 #define MTQ_DIPOLE_TO_AMP     (1.0f / 2.88f) // Datasheet: 2.88 Am^2/A (0.34 Am² @ 3.3V, R=28Ω)
 
+// Simulation telemetry quantization (HITL packet v2)
+// Values are encoded as int16 Q15 fractions of these full-scale magnitudes.
+#define TELEMETRY_PACKET_VERSION 1u
+#define M_CMD_FULL_SCALE_AM2     8.0f
+#define TAU_FULL_SCALE_NM        0.05f
+
 #endif // CONFIG_H

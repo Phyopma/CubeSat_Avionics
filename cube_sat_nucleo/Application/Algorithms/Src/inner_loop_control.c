@@ -30,6 +30,37 @@ static float ClampF(float x, float lo, float hi) {
     return x;
 }
 
+static int16_t QuantizeQ15(float value, float full_scale, uint8_t *saturated) {
+    if (full_scale <= 1e-12f) {
+        if (saturated != NULL) {
+            *saturated = 1u;
+        }
+        return 0;
+    }
+
+    float normalized = value / full_scale;
+    if (normalized > 1.0f) {
+        normalized = 1.0f;
+        if (saturated != NULL) {
+            *saturated = 1u;
+        }
+    } else if (normalized < -1.0f) {
+        normalized = -1.0f;
+        if (saturated != NULL) {
+            *saturated = 1u;
+        }
+    }
+
+    float scaled = normalized * 32767.0f;
+    if (scaled >= 32767.0f) {
+        return 32767;
+    }
+    if (scaled <= -32768.0f) {
+        return -32768;
+    }
+    return (int16_t)lroundf(scaled);
+}
+
 void InnerLoop_SetVoltageLimit(float v_limit)
 {
     float clamped = ClampF(v_limit, 0.5f, 12.0f);
@@ -113,11 +144,35 @@ void InnerLoop_Update(void)
     static uint32_t last_telemetry_tick = 0;
     uint32_t current_tick = HAL_GetTick();
     if (current_tick - last_telemetry_tick >= 10) { // 10ms = 100Hz
+        vec3_t m_cmd = {0.0f, 0.0f, 0.0f};
+        vec3_t tau_raw = {0.0f, 0.0f, 0.0f};
+        vec3_t tau_proj = {0.0f, 0.0f, 0.0f};
+        uint8_t m_sat = 0u;
+        uint8_t tau_raw_sat = 0u;
+        uint8_t tau_proj_sat = 0u;
+
+        OuterLoop_GetLastDipoleCommand(&m_cmd);
+        OuterLoop_GetLastTorqueRaw(&tau_raw);
+        OuterLoop_GetLastTorqueProjected(&tau_proj);
+
         sim_output.header = 0x62B5; // Sync Word (Sends 0xB5 then 0x62 on Little Endian)
         sim_output.command_voltage_x = state.command_voltage_x;
         sim_output.command_voltage_y = state.command_voltage_y;
         sim_output.command_voltage_z = state.command_voltage_z;
         sim_output.adcs_mode = OuterLoop_GetTelemetryByte();
+        sim_output.m_cmd_q15_x = QuantizeQ15(m_cmd.x, M_CMD_FULL_SCALE_AM2, &m_sat);
+        sim_output.m_cmd_q15_y = QuantizeQ15(m_cmd.y, M_CMD_FULL_SCALE_AM2, &m_sat);
+        sim_output.m_cmd_q15_z = QuantizeQ15(m_cmd.z, M_CMD_FULL_SCALE_AM2, &m_sat);
+        sim_output.tau_raw_q15_x = QuantizeQ15(tau_raw.x, TAU_FULL_SCALE_NM, &tau_raw_sat);
+        sim_output.tau_raw_q15_y = QuantizeQ15(tau_raw.y, TAU_FULL_SCALE_NM, &tau_raw_sat);
+        sim_output.tau_raw_q15_z = QuantizeQ15(tau_raw.z, TAU_FULL_SCALE_NM, &tau_raw_sat);
+        sim_output.tau_proj_q15_x = QuantizeQ15(tau_proj.x, TAU_FULL_SCALE_NM, &tau_proj_sat);
+        sim_output.tau_proj_q15_y = QuantizeQ15(tau_proj.y, TAU_FULL_SCALE_NM, &tau_proj_sat);
+        sim_output.tau_proj_q15_z = QuantizeQ15(tau_proj.z, TAU_FULL_SCALE_NM, &tau_proj_sat);
+        sim_output.telemetry_flags = (uint8_t)(TELEMETRY_PACKET_VERSION & 0x0Fu);
+        sim_output.telemetry_flags |= (uint8_t)((m_sat & 0x01u) << 4);
+        sim_output.telemetry_flags |= (uint8_t)((tau_raw_sat & 0x01u) << 5);
+        sim_output.telemetry_flags |= (uint8_t)((tau_proj_sat & 0x01u) << 6);
         
         HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
         last_telemetry_tick = current_tick;
