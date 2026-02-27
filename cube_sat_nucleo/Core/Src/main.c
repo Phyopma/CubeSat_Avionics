@@ -27,12 +27,14 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "adt7420.h"
 #include "serial_log_dma.h"
 #include "imu_bno085.h"
 #include "inner_loop_control.h"
+#include "outer_loop_control.h"
+#include "config.h"
 #include "teleplot.h"
 #include "app_runtime.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,13 +44,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ENABLE_ADT7420 0
-#define ENABLE_BNO085_ROTATION_VECTOR 0
-#define ENABLE_BNO085_GAME_ROTATION_VECTOR 0
-#define ENABLE_BNO085_GYROSCOPE 0
-#define ENABLE_BNO085_MAGNETOMETER 0
-#define ENABLE_BNO085_LINEAR_ACCELERATION 0
-#define ENABLE_INNER_LOOP_CONTROL 1
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,10 +57,10 @@
 /* USER CODE BEGIN PV */
 bno085_t imu;
 
-
 #ifdef SIMULATION_MODE
 volatile SimPacket_Input_t sim_input;
 volatile SimPacket_Output_t sim_output;
+volatile uint8_t sim_packet_received_main = 0;
 #endif
 /* USER CODE END PV */
 
@@ -124,7 +120,9 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim6);
 
 #ifdef SIMULATION_MODE
-  HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
+  // Start receiving the first Sync Byte (State Machine)
+  extern uint8_t uart_sync_byte;
+  HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
 #endif
   AppRuntime_Start();
 
@@ -195,15 +193,54 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 #ifdef SIMULATION_MODE
+uint8_t uart_sync_byte;
+uint8_t uart_payload_buffer[sizeof(SimPacket_Input_t)];
+static enum { RX_SYNC1, RX_SYNC2, RX_PAYLOAD } uart_rx_state = RX_SYNC1;
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
-    // 1. We just received new inputs in `sim_input`. 
-    // The Timer Interrupt (1kHz) will pick this up automatically.
-    
-    // 2. Restart Reception for the next packet
-    HAL_UART_Receive_IT(&huart2, (uint8_t*)&sim_input, sizeof(sim_input));
+    switch (uart_rx_state) {
+      case RX_SYNC1:
+        if (uart_sync_byte == 0xB5) {
+          uart_rx_state = RX_SYNC2;
+        }
+        HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        break;
+
+      case RX_SYNC2:
+        if (uart_sync_byte == 0x62) {
+          uart_rx_state = RX_PAYLOAD;
+          // Store header, receive rest of packet
+          uart_payload_buffer[0] = 0xB5;
+          uart_payload_buffer[1] = 0x62;
+          HAL_UART_Receive_IT(&huart2, &uart_payload_buffer[2], sizeof(SimPacket_Input_t) - 2);
+        } else {
+          uart_rx_state = RX_SYNC1;
+          HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        }
+        break;
+
+      case RX_PAYLOAD:
+        // Full packet received!
+        memcpy((void*)&sim_input, uart_payload_buffer, sizeof(SimPacket_Input_t));
+
+        InnerLoop_Update_SimDataAvailable();
+        sim_packet_received_main = 1;
+
+        // Notify ADCS task (RTOS)
+        if (g_adcs_task_handle != NULL) {
+          BaseType_t hpw = pdFALSE;
+          vTaskNotifyGiveFromISR(g_adcs_task_handle, &hpw);
+          portYIELD_FROM_ISR(hpw);
+        }
+
+        // Reset for next packet
+        uart_rx_state = RX_SYNC1;
+        HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
+        break;
+    }
   }
 }
 #endif
