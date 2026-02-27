@@ -1,0 +1,112 @@
+{
+  "base": {
+    "ok": true,
+    "samples": 121,
+    "w_start": 0.866,
+    "w_end_sample": 0.435,
+    "w_min": 0.435,
+    "w_drop": 0.431,
+    "w_drop_pct": 49.76905311778291,
+    "w_final": 0.434951,
+    "err_final": 86.097078,
+    "metrics": {
+      "Mode": "1",
+      "Dwell": "0.999167",
+      "ForcedDwell": "0.999167",
+      "Sat": "0.906467",
+      "Transitions": "1",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.000833",
+      "IntClamp": "0.000833"
+    },
+    "monotonic_w_flag": 1.0
+  },
+  "v5_d2x": {
+    "ok": true,
+    "samples": 121,
+    "w_start": 0.866,
+    "w_end_sample": 0.078,
+    "w_min": 0.078,
+    "w_drop": 0.788,
+    "w_drop_pct": 90.99307159353349,
+    "w_final": 0.078487,
+    "err_final": 122.716617,
+    "metrics": {
+      "Mode": "1",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.494310",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.000000",
+      "IntClamp": "0.000000"
+    },
+    "monotonic_w_flag": 0.95
+  },
+  "v5_d5x": {
+    "ok": true,
+    "samples": 121,
+    "w_start": 0.866,
+    "w_end_sample": 0.039,
+    "w_min": 0.039,
+    "w_drop": 0.827,
+    "w_drop_pct": 95.49653579676674,
+    "w_final": 0.039321,
+    "err_final": 17.750104,
+    "metrics": {
+      "Mode": "1",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.138218",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.000000",
+      "IntClamp": "0.000000"
+    },
+    "monotonic_w_flag": 0.9333333333333333
+  },
+  "v7_d2x": {
+    "ok": true,
+    "samples": 121,
+    "w_start": 0.866,
+    "w_end_sample": 0.003,
+    "w_min": 0.003,
+    "w_drop": 0.863,
+    "w_drop_pct": 99.65357967667437,
+    "w_final": 0.002648,
+    "err_final": 38.949132,
+    "metrics": {
+      "Mode": "1",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.308077",
+      "Transitions": "0",
+      "Tsettle": "72.600000",
+      "ProjLoss": "0.000000",
+      "IntClamp": "0.000000"
+    },
+    "monotonic_w_flag": 0.9833333333333333
+  },
+  "v7_d5x": {
+    "ok": true,
+    "samples": 121,
+    "w_start": 0.866,
+    "w_end_sample": 0.061,
+    "w_min": 0.061,
+    "w_drop": 0.8049999999999999,
+    "w_drop_pct": 92.95612009237874,
+    "w_final": 0.060977,
+    "err_final": 23.759507,
+    "metrics": {
+      "Mode": "1",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.066056",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.000000",
+      "IntClamp": "0.000000"
+    },
+    "monotonic_w_flag": 0.8833333333333333
+  }
+}

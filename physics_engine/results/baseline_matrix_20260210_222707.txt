@@ -1,0 +1,10 @@
+BASELINE_MATRIX
+K_BDOT=400000.0
+K_P=0.0014
+K_I=6e-05
+K_D=0.18
+
+DT_A: W=0.0208 Err=90.19deg Mode=3 FDwell=-1.000 Sat=0.491 Proj=0.496 IntClamp=0.497 Trans=1 Tset=298.90s Score=86.989
+DT_B: W=0.0514 Err=99.39deg Mode=1 FDwell=-1.000 Sat=0.459 Proj=0.296 IntClamp=0.296 Trans=3 Tset=410.60s Score=112.060
+PT_A: W=0.0368 Err=59.61deg Mode=3 FDwell=-1.000 Sat=0.273 Proj=0.851 IntClamp=0.851 Trans=3 Tset=-1.00s Score=198.061
+PT_B: W=0.0278 Err=52.55deg Mode=3 FDwell=-1.000 Sat=0.314 Proj=0.886 IntClamp=0.886 Trans=3 Tset=-1.00s Score=195.953

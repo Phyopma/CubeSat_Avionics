@@ -1,0 +1,117 @@
+{
+  "base": {
+    "ok": true,
+    "samples": 91,
+    "err_start": 179.6,
+    "err_end_sample": 21.6,
+    "err_min": 13.9,
+    "err_max": 179.6,
+    "err_drop": 158.0,
+    "rebound_from_min": 7.700000000000001,
+    "w_final": 0.041845,
+    "err_final": 21.63335,
+    "metrics": {
+      "Mode": "3",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.236034",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.967742",
+      "IntClamp": "1.000000"
+    },
+    "drift_away_flag": false
+  },
+  "v5_d2x": {
+    "ok": true,
+    "samples": 91,
+    "err_start": 179.6,
+    "err_end_sample": 75.9,
+    "err_min": 12.1,
+    "err_max": 179.6,
+    "err_drop": 103.69999999999999,
+    "rebound_from_min": 63.800000000000004,
+    "w_final": 0.055522,
+    "err_final": 75.889566,
+    "metrics": {
+      "Mode": "3",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.038106",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.996849",
+      "IntClamp": "1.000000"
+    },
+    "drift_away_flag": true
+  },
+  "v5_d5x": {
+    "ok": true,
+    "samples": 91,
+    "err_start": 179.6,
+    "err_end_sample": 57.7,
+    "err_min": 11.9,
+    "err_max": 179.6,
+    "err_drop": 121.89999999999999,
+    "rebound_from_min": 45.800000000000004,
+    "w_final": 0.054416,
+    "err_final": 57.705615,
+    "metrics": {
+      "Mode": "3",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.014428",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.998102",
+      "IntClamp": "1.000000"
+    },
+    "drift_away_flag": true
+  },
+  "v7_d2x": {
+    "ok": true,
+    "samples": 91,
+    "err_start": 179.6,
+    "err_end_sample": 69.5,
+    "err_min": 12.1,
+    "err_max": 179.6,
+    "err_drop": 110.1,
+    "rebound_from_min": 57.4,
+    "w_final": 0.055277,
+    "err_final": 69.486166,
+    "metrics": {
+      "Mode": "3",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.027747",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.997494",
+      "IntClamp": "1.000000"
+    },
+    "drift_away_flag": true
+  },
+  "v7_d5x": {
+    "ok": true,
+    "samples": 91,
+    "err_start": 179.6,
+    "err_end_sample": 52.0,
+    "err_min": 11.8,
+    "err_max": 179.6,
+    "err_drop": 127.6,
+    "rebound_from_min": 40.2,
+    "w_final": 0.05383,
+    "err_final": 52.048428,
+    "metrics": {
+      "Mode": "3",
+      "Dwell": "1.000000",
+      "ForcedDwell": "1.000000",
+      "Sat": "0.012579",
+      "Transitions": "0",
+      "Tsettle": "-1.000000",
+      "ProjLoss": "0.998317",
+      "IntClamp": "1.000000"
+    },
+    "drift_away_flag": true
+  }
+}
