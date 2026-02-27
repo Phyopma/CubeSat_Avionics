@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "dma.h"
 #include "i2c.h"
 #include "spi.h"
@@ -66,6 +67,7 @@ volatile uint8_t sim_packet_received_main = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -128,12 +130,22 @@ int main(void)
 
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  // osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+  // MX_FREERTOS_Init();
+
+  /* Start scheduler */
+  // osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    AppRuntime_RunOnce();
+    // AppRuntime_RunOnce();
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
 
@@ -184,14 +196,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM6)
-  {
-    AppRuntime_OnControlTickFromISR();
-  }
-}
-
 #ifdef SIMULATION_MODE
 uint8_t uart_sync_byte;
 uint8_t uart_payload_buffer[sizeof(SimPacket_Input_t)];
@@ -246,6 +250,31 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 #endif
 
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    AppRuntime_OnControlTickFromISR();
+  }
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
