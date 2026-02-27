@@ -7,6 +7,8 @@
 
 #include "serial_log_dma.h"
 #include <stdbool.h>
+#include "FreeRTOS.h"
+#include "task.h"
 static UART_HandleTypeDef *g_huart = NULL;
 static volatile uint8_t g_tx_busy = 0;
 
@@ -23,9 +25,9 @@ void serial_log_init(UART_HandleTypeDef *huart) { g_huart = huart; }
 
 static bool queue_push(const char *msg, size_t n)
 {
-    __disable_irq();
+    taskENTER_CRITICAL();
     if (g_q_count >= LOG_QUEUE_DEPTH) {
-        __enable_irq();
+        taskEXIT_CRITICAL();
         g_drop_count++;
         return false;
     }
@@ -34,15 +36,15 @@ static bool queue_push(const char *msg, size_t n)
     g_queue[g_q_tail][copy_n] = '\0';
     g_q_tail = (uint8_t)((g_q_tail + 1U) % LOG_QUEUE_DEPTH);
     g_q_count++;
-    __enable_irq();
+    taskEXIT_CRITICAL();
     return true;
 }
 
 static bool queue_pop(char *out, size_t out_sz)
 {
-    __disable_irq();
+    taskENTER_CRITICAL();
     if (g_q_count == 0 || out_sz == 0U) {
-        __enable_irq();
+        taskEXIT_CRITICAL();
         return false;
     }
     size_t n = strnlen(g_queue[g_q_head], LOG_BUF_SZ);
@@ -53,7 +55,7 @@ static bool queue_pop(char *out, size_t out_sz)
     out[n] = '\0';
     g_q_head = (uint8_t)((g_q_head + 1U) % LOG_QUEUE_DEPTH);
     g_q_count--;
-    __enable_irq();
+    taskEXIT_CRITICAL();
     return true;
 }
 
