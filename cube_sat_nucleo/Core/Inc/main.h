@@ -75,17 +75,43 @@ void Error_Handler(void);
 #ifdef SIMULATION_MODE
 // 1 byte alignment to ensure Python struct.pack() matches exactly
 typedef struct __attribute__((packed)) {
-    float current_amps;
-    float gyro[3];      // x, y, z
-    float mag[3];       // x, y, z
-    float quat[4];      // r, i, j, k
-    float target_current_cmd; // Setpoint from host
+    uint16_t header;    // 0xB5 0x62 Sync
+    float current_amps_x;
+    float current_amps_y;
+    float current_amps_z;
+    float gyro_x, gyro_y, gyro_z;
+    float mag_x, mag_y, mag_z;
+    float q_w, q_x, q_y, q_z;
+    float k_bdot;       // B-Dot Gain
+    float kp;           // Pointing Proportional Gain
+    float ki;           // Pointing Integral Gain
+    float kd;           // Pointing Derivative Gain
+    float dt;           // Simulation Step Size
+    uint8_t debug_flags; // Bit0: Open Loop, Bits1-2: Forced Mode, Bit3: Reset Controller State (edge-triggered)
+    uint16_t max_voltage_mV;       // Runtime voltage clamp override [mV]
+    uint16_t dipole_strength_milli; // Runtime dipole strength override [milli Am^2/A]
 } SimPacket_Input_t;
 
 typedef struct __attribute__((packed)) {
     uint16_t header;    // 0xB5 0x62 (Synchronization Word)
-    float command_voltage;
-    float debug_flags;  // Placeholder for future use
+    float command_voltage_x;
+    float command_voltage_y;
+    float command_voltage_z;
+    uint8_t adcs_mode;  // Packed telemetry byte:
+                        // bits0-1 mode (0:Idle,1:Detumble,2:Spin,3:Pointing),
+                        // bit2 integral clamp/freeze flag,
+                        // bits3-7 projection-loss quantized [0..31]
+    int16_t m_cmd_q15_x;
+    int16_t m_cmd_q15_y;
+    int16_t m_cmd_q15_z;
+    int16_t tau_raw_q15_x;
+    int16_t tau_raw_q15_y;
+    int16_t tau_raw_q15_z;
+    int16_t tau_proj_q15_x;
+    int16_t tau_proj_q15_y;
+    int16_t tau_proj_q15_z;
+    uint8_t telemetry_flags; // bits0-3: packet version, bit4: m saturation,
+                             // bit5: tau_raw saturation, bit6: tau_proj saturation
 } SimPacket_Output_t;
 
 extern volatile SimPacket_Input_t sim_input;
