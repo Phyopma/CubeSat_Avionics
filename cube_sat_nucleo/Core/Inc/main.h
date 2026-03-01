@@ -69,9 +69,7 @@ void Error_Handler(void);
 #define IMU_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-#define SIMULATION_MODE 1  // simulation-only branch (locked)
 
-#if SIMULATION_MODE
   // 1 byte alignment to ensure Python struct.pack() matches exactly
   typedef struct __attribute__((packed))
   {
@@ -119,7 +117,6 @@ extern volatile SimPacket_Input_t sim_input;
 extern volatile SimPacket_Output_t sim_output;
 extern volatile uint32_t sim_last_packet_ms;
 extern UART_HandleTypeDef huart2; // Ensure this is visible if needed
-#endif
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -15,9 +15,6 @@ mtq_state_t state;
 static float runtime_voltage_limit = PIL_MAX_VOLTAGE;
 static volatile uint8_t g_state_valid = 0U;
 
-#ifndef SIMULATION_MODE
-static float filtered_current_z = 0.0f; // Only Z has real sensor for now
-#endif
 
 // HITL Sync Flag
 volatile uint8_t sim_data_ready = 0;
@@ -116,7 +113,6 @@ void InnerLoop_Update(void)
     state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
-#ifdef SIMULATION_MODE
     // === MODE B-Sim: HITL SIMULATION ===
     // 1. Read 3-axis currents from sim
     state.measured_current_x = sim_input.current_amps_x;
@@ -177,27 +173,6 @@ void InnerLoop_Update(void)
         last_telemetry_tick = current_tick;
     }
 
-#else
-    // === MODE C: REAL HARDWARE (Partial) ===
-    // X and Y have no sensors, assume 0 measurement
-    state.measured_current_x = 0.0f;
-    state.measured_current_y = 0.0f;
-
-    // Z-Axis: Read Raw Hardware Value
-    float raw_val_z = CurrentSensor_Read_Amps();
-
-    // Inject Sign (Polarity logic for Z)
-    float signed_raw_z = (state.command_voltage_z < 0.0f) ? -1.0f * fabsf(raw_val_z) : fabsf(raw_val_z);
-
-    // Low Pass Filter for Z
-    filtered_current_z = (filtered_current_z * 0.90f) + (signed_raw_z * 0.10f);
-    state.measured_current_z = filtered_current_z;
-
-    // Run PI on all axes
-    state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
-    state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
-    state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
-#endif
 #endif
 
     // 3. Apply Command to H-Bridge Drivers (Axis 0=X, 1=Y, 2=Z)
