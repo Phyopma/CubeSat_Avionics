@@ -59,12 +59,6 @@
 bno085_t imu;
 
 
-#if SIMULATION_MODE
-volatile SimPacket_Input_t sim_input;
-volatile SimPacket_Output_t sim_output;
-volatile uint8_t sim_packet_received_main = 0;
-volatile uint32_t sim_last_packet_ms = 0;
-#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -115,18 +109,11 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-#if !SIMULATION_MODE
   serial_log_init(&huart2);
   static uint8_t boot_banner[] = "UART DMA logger online\r\n";
   (void)HAL_UART_Transmit(&huart2, boot_banner, (uint16_t)(sizeof(boot_banner) - 1U), 20U);
-#endif
   AppRuntime_Init();
 
-#if SIMULATION_MODE
-  // Start receiving the first Sync Byte (State Machine)
-  extern uint8_t uart_sync_byte;
-  HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
-#endif
   AppRuntime_Start();
 
   /* USER CODE END 2 */
@@ -190,97 +177,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-#if SIMULATION_MODE
-uint8_t uart_sync_byte;
-uint8_t uart_payload_buffer[sizeof(SimPacket_Input_t)];
-static enum { RX_SYNC1,
-              RX_SYNC2,
-              RX_PAYLOAD } uart_rx_state = RX_SYNC1;
-static uint32_t sim_uart_error_count = 0U;
-
-static void SimUart_RearmSyncRx(void)
-{
-  uart_rx_state = RX_SYNC1;
-  (void)HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1);
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART2)
-  {
-    switch (uart_rx_state)
-    {
-    case RX_SYNC1:
-      if (uart_sync_byte == 0xB5)
-      {
-        uart_rx_state = RX_SYNC2;
-      }
-      if (HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1) != HAL_OK)
-      {
-        SimUart_RearmSyncRx();
-      }
-      break;
-
-    case RX_SYNC2:
-      if (uart_sync_byte == 0x62)
-      {
-        uart_rx_state = RX_PAYLOAD;
-        // Store header, receive rest of packet
-        uart_payload_buffer[0] = 0xB5;
-        uart_payload_buffer[1] = 0x62;
-        if (HAL_UART_Receive_IT(&huart2, &uart_payload_buffer[2], sizeof(SimPacket_Input_t) - 2) != HAL_OK)
-        {
-          SimUart_RearmSyncRx();
-        }
-      }
-      else
-      {
-        uart_rx_state = RX_SYNC1;
-        if (HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1) != HAL_OK)
-        {
-          SimUart_RearmSyncRx();
-        }
-      }
-      break;
-
-    case RX_PAYLOAD:
-      // Full packet received!
-      memcpy((void *)&sim_input, uart_payload_buffer, sizeof(SimPacket_Input_t));
-
-      InnerLoop_Update_SimDataAvailable();
-      sim_packet_received_main = 1;
-      sim_last_packet_ms = HAL_GetTick();
-
-      // Notify ADCS task only after scheduler is running.
-      if (g_adcs_task_handle != NULL &&
-          xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
-      {
-        BaseType_t hpw = pdFALSE;
-        vTaskNotifyGiveFromISR(g_adcs_task_handle, &hpw);
-        portYIELD_FROM_ISR(hpw);
-      }
-
-      // Reset for next packet
-      uart_rx_state = RX_SYNC1;
-      if (HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1) != HAL_OK)
-      {
-        SimUart_RearmSyncRx();
-      }
-      break;
-    }
-  }
-}
-
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART2)
-  {
-    sim_uart_error_count++;
-    __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
-    SimUart_RearmSyncRx();
-  }
-}
-#endif
 
 /* USER CODE END 4 */
 

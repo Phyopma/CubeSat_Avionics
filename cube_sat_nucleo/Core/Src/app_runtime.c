@@ -35,7 +35,6 @@ TaskHandle_t g_adcs_task_handle = NULL; // Exported for UART ISR notification
 
 extern bno085_t imu;
 
-#if !SIMULATION_MODE
 typedef struct
 {
     float temp_c;
@@ -191,7 +190,6 @@ static void AppRuntime_ReenableMissingImuReports(uint32_t now_ms)
         "BNO085 re-enable missing grv=%u q=%u mag=%u gyro=%u lin=%u",
         need_grv, need_q, need_mag, need_gyro, need_lin);
 }
-#endif
 
 static void AppRuntime_FatalStartup(const char *msg)
 {
@@ -201,9 +199,7 @@ static void AppRuntime_FatalStartup(const char *msg)
         int n = snprintf(line, sizeof(line), "FATAL RTOS startup: %s", msg);
         if (n > 0)
         {
-#if !SIMULATION_MODE
             AppRuntime_BootPrint(line);
-#endif
         }
         log_printf_dma("FATAL RTOS startup: %s", msg);
         serial_log_process_tx();
@@ -224,7 +220,6 @@ static void app_sensor_step(void)
     CurrentSensor_RunAsyncSample();
     CurrentSensor_SubmitSampleRequest();
 
-#if !SIMULATION_MODE
     if (g_temp_sensor_ready == 0U)
     {
         if ((uint32_t)(now_ms - g_last_temp_init_attempt_ms) >= SENSOR_INIT_RETRY_MS)
@@ -249,14 +244,11 @@ static void app_sensor_step(void)
             AppSensorCache_SetTemperature(temp_c);
         }
     }
-#else
-    (void)now_ms;
-#endif
 }
 
 static void app_telemetry_step(void)
 {
-#if !SIMULATION_MODE && HARDWARE_TELEPLOT_ENABLE
+#if HARDWARE_TELEPLOT_ENABLE
     mtq_state_t data;
     if (!InnerLoop_GetStateSnapshot(&data, 0U))
     {
@@ -276,7 +268,6 @@ static void app_telemetry_step(void)
 
 static void app_imu_step(void)
 {
-#if !SIMULATION_MODE
     uint32_t now_ms = HAL_GetTick();
     if (g_imu_ready == 0U)
     {
@@ -315,12 +306,10 @@ static void app_imu_step(void)
         }
     }
     AppRuntime_ReenableMissingImuReports(now_ms);
-#endif
 }
 
 static void app_sensor_console_step(void)
 {
-#if !SIMULATION_MODE
     app_sensor_log_cache_t sensor;
     AppSensorCache_Snapshot(&sensor);
 
@@ -349,7 +338,6 @@ static void app_sensor_console_step(void)
         AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.x), AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.y),
         AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.z),
         sensor.temp_valid);
-#endif
 }
 
 /* ---------- ISR entry point ---------- */
@@ -387,42 +375,25 @@ static void TelemetryTask(void *argument)
 {
     (void)argument;
     TickType_t next_wake = xTaskGetTickCount();
-#if !SIMULATION_MODE
     uint32_t last_sensor_log_ms = 0U;
-#endif
     for (;;)
     {
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
         app_telemetry_step();
-#if !SIMULATION_MODE
         uint32_t now_ms = HAL_GetTick();
         if ((uint32_t)(now_ms - last_sensor_log_ms) >= SENSOR_LOG_PERIOD_MS)
         {
             app_sensor_console_step();
             last_sensor_log_ms = now_ms;
         }
-#endif
     }
 }
 
 static void LoggerTask(void *argument)
 {
     (void)argument;
-#if SIMULATION_MODE
-    uint32_t last_wait_log_ms = 0U;
-#endif
     for (;;)
     {
-#if SIMULATION_MODE
-        uint32_t now_ms = HAL_GetTick();
-        uint32_t last_rx_ms = sim_last_packet_ms;
-        if ((uint32_t)(now_ms - last_rx_ms) >= 1000U &&
-            (uint32_t)(now_ms - last_wait_log_ms) >= 1000U)
-        {
-            log_printf_async("[SIM] waiting for host packets on UART2");
-            last_wait_log_ms = now_ms;
-        }
-#endif
         serial_log_process_tx();
         vTaskDelay(pdMS_TO_TICKS(1U));
     }
@@ -448,112 +419,28 @@ static void ADCSTask(void *argument)
     static float last_c_damp = -1.0f, last_i_virtual = -1.0f;
     static uint8_t last_force_mode = 0xFF;
     static uint8_t last_reset_request = 0;
-#if SIMULATION_MODE
-    static float runtime_mtq_dipole_to_amp = MTQ_DIPOLE_TO_AMP;
-    static float last_runtime_voltage = PIL_MAX_VOLTAGE;
-    static float last_runtime_dipole = (1.0f / MTQ_DIPOLE_TO_AMP);
-#endif
 
     adcs_sensor_input_t adcs_in;
     adcs_output_t adcs_out;
 
-#if !SIMULATION_MODE
     TickType_t next_wake = xTaskGetTickCount();
-#endif
     for (;;)
     {
-#if SIMULATION_MODE
-        // In sim mode, wait for packet notification but fail safe to zero command
-        // if packet flow stalls (prevents stale torque from being held indefinitely).
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(SIM_PACKET_TIMEOUT_MS)) == 0U)
-        {
-            InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
-            continue;
-        }
-#else
         // In hardware mode, run at fixed 100Hz rate
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(ADCS_PERIOD_MS));
-#endif
 
         // 1. Prepare ADCS Input
-#if SIMULATION_MODE
-        adcs_in.mag_field = (vec3_t){sim_input.mag_x, sim_input.mag_y, sim_input.mag_z};
-        adcs_in.gyro = (vec3_t){sim_input.gyro_x, sim_input.gyro_y, sim_input.gyro_z};
-        adcs_in.orientation = (quat_t){sim_input.q_w, sim_input.q_x, sim_input.q_y, sim_input.q_z};
-
-        // Dynamic mode forcing
-        uint8_t force_mode = (sim_input.debug_flags >> 1) & 0x03;
-        uint8_t reset_request = (sim_input.debug_flags >> 3) & 0x01;
-        if (force_mode != last_force_mode)
-        {
-            OuterLoop_SetForcedMode(force_mode);
-            last_force_mode = force_mode;
-        }
-        if (reset_request && !last_reset_request)
-        {
-            OuterLoop_ResetControllerState();
-        }
-        last_reset_request = reset_request;
-
-        // Dynamic voltage/dipole overrides
-        float runtime_voltage = ClampF_RT(0.001f * (float)sim_input.max_voltage_mV, 0.5f, 12.0f);
-        float runtime_dipole = ClampF_RT(0.001f * (float)sim_input.dipole_strength_milli, 0.1f, 20.0f);
-
-        if (fabsf(runtime_voltage - last_runtime_voltage) > 1e-4f)
-        {
-            InnerLoop_SetVoltageLimit(runtime_voltage);
-            last_runtime_voltage = runtime_voltage;
-        }
-        if (fabsf(runtime_dipole - last_runtime_dipole) > 1e-6f)
-        {
-            runtime_mtq_dipole_to_amp = 1.0f / runtime_dipole;
-            last_runtime_dipole = runtime_dipole;
-        }
-
-        // Dynamic gains from sim
-        if (force_mode == 2)
-        {
-            // Forced SPIN mode: kp/kd fields carry Kane parameters
-            if (sim_input.kp != last_c_damp || sim_input.kd != last_i_virtual)
-            {
-                OuterLoop_SetSpinParams(sim_input.kp, sim_input.kd);
-                last_c_damp = sim_input.kp;
-                last_i_virtual = sim_input.kd;
-            }
-            last_kbdot = sim_input.k_bdot;
-            last_kp = sim_input.kp;
-            last_ki = sim_input.ki;
-            last_kd = sim_input.kd;
-        }
-        else if (sim_input.k_bdot != last_kbdot || sim_input.kp != last_kp ||
-                 sim_input.ki != last_ki || sim_input.kd != last_kd)
-        {
-            OuterLoop_SetGains(sim_input.k_bdot, sim_input.kp, sim_input.ki, sim_input.kd);
-            last_kbdot = sim_input.k_bdot;
-            last_kp = sim_input.kp;
-            last_ki = sim_input.ki;
-            last_kd = sim_input.kd;
-        }
-#else
         // TODO: Read from physical sensors (BNO085)
         // For now, zero input (sensors handled by ImuTask)
         adcs_in.mag_field = (vec3_t){0.0f, 0.0f, 0.0f};
         adcs_in.gyro = (vec3_t){0.0f, 0.0f, 0.0f};
         adcs_in.orientation = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
-#endif
 
         // 2. Run ADCS Algorithms
-#if SIMULATION_MODE
-        OuterLoop_Update(&adcs_in, &adcs_out, sim_input.dt);
-#else
         OuterLoop_Update(&adcs_in, &adcs_out, 0.01f); // 100Hz
-#endif
 
         // 3. Command the Inner Loop
         float mtq_dipole_to_amp = MTQ_DIPOLE_TO_AMP;
-#if SIMULATION_MODE
-        mtq_dipole_to_amp = runtime_mtq_dipole_to_amp;
-#endif
         float target_x = adcs_out.dipole_request.x * mtq_dipole_to_amp;
         float target_y = adcs_out.dipole_request.y * mtq_dipole_to_amp;
         float target_z = adcs_out.dipole_request.z * mtq_dipole_to_amp;
@@ -566,20 +453,13 @@ static void ADCSTask(void *argument)
 
 void AppRuntime_Init(void)
 {
-#if !SIMULATION_MODE
     AppRuntime_BootPrint("BOOT AppRuntime_Init enter");
-#endif
     InnerLoop_Init();
-#if !SIMULATION_MODE
     AppRuntime_BootPrint("BOOT InnerLoop_Init done");
-#endif
     OuterLoop_Init();
-#if !SIMULATION_MODE
     AppRuntime_BootPrint("BOOT OuterLoop_Init done");
-#endif
     InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
     CurrentSensor_SubmitSampleRequest();
-#if !SIMULATION_MODE
     g_imu_ready = 0U;
     g_temp_sensor_ready = 0U;
     g_last_imu_init_attempt_ms = HAL_GetTick() - SENSOR_INIT_RETRY_MS;
@@ -587,7 +467,6 @@ void AppRuntime_Init(void)
     g_last_imu_reenable_ms = 0U;
     log_printf_dma("AppRuntime init complete (deferred sensor init)");
     AppRuntime_BootPrint("BOOT AppRuntime_Init done");
-#endif
 }
 
 void AppRuntime_Start(void)
@@ -612,12 +491,10 @@ void AppRuntime_Start(void)
     {
         AppRuntime_FatalStartup("xTaskCreate(TelemetryTask)");
     }
-#if !SIMULATION_MODE
     if (xTaskCreate(LoggerTask, "LoggerTask", 512U, NULL, 2U, NULL) != pdPASS)
     {
         AppRuntime_FatalStartup("xTaskCreate(LoggerTask)");
     }
-#endif
     vTaskStartScheduler();
     AppRuntime_FatalStartup("vTaskStartScheduler returned");
 }

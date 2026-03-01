@@ -15,9 +15,7 @@ mtq_state_t state;
 static float runtime_voltage_limit = PIL_MAX_VOLTAGE;
 static volatile uint8_t g_state_valid = 0U;
 
-#if !SIMULATION_MODE
 static float filtered_current_z = 0.0f; // Only Z has real sensor for now
-#endif
 
 // HITL Sync Flag
 volatile uint8_t sim_data_ready = 0;
@@ -130,75 +128,6 @@ void InnerLoop_Update(void)
     state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
-#if SIMULATION_MODE
-    // === MODE B-Sim: HITL SIMULATION ===
-    // 1. Read 3-axis currents from sim
-    state.measured_current_x = sim_input.current_amps_x;
-    state.measured_current_y = sim_input.current_amps_y;
-    state.measured_current_z = sim_input.current_amps_z;
-
-    // 2. Run Control Logic when new data arrives
-    if (sim_data_ready)
-    {
-        if (sim_input.debug_flags & 0x01)
-        {
-            // === OPEN LOOP OVERRIDE (Debug) ===
-            state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
-            state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
-            state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
-        }
-        else
-        {
-            // === CLOSED LOOP (PI) ===
-            state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
-            state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
-            state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
-        }
-        sim_data_ready = 0;
-    }
-
-    // 3. Send Output to Simulator (Rate Limited to 100Hz)
-    static uint32_t last_telemetry_tick = 0;
-    uint32_t current_tick = HAL_GetTick();
-    if (current_tick - last_telemetry_tick >= 10)
-    { // 10ms = 100Hz
-        vec3_t m_cmd = {0.0f, 0.0f, 0.0f};
-        vec3_t tau_raw = {0.0f, 0.0f, 0.0f};
-        vec3_t tau_proj = {0.0f, 0.0f, 0.0f};
-        uint8_t m_sat = 0u;
-        uint8_t tau_raw_sat = 0u;
-        uint8_t tau_proj_sat = 0u;
-
-        OuterLoop_GetLastDipoleCommand(&m_cmd);
-        OuterLoop_GetLastTorqueRaw(&tau_raw);
-        OuterLoop_GetLastTorqueProjected(&tau_proj);
-
-        sim_output.header = 0x62B5; // Sync Word (Little Endian: 0xB5 then 0x62)
-        sim_output.command_voltage_x = state.command_voltage_x;
-        sim_output.command_voltage_y = state.command_voltage_y;
-        sim_output.command_voltage_z = state.command_voltage_z;
-        sim_output.adcs_mode = OuterLoop_GetTelemetryByte();
-        sim_output.m_cmd_q15_x = QuantizeQ15(m_cmd.x, M_CMD_FULL_SCALE_AM2, &m_sat);
-        sim_output.m_cmd_q15_y = QuantizeQ15(m_cmd.y, M_CMD_FULL_SCALE_AM2, &m_sat);
-        sim_output.m_cmd_q15_z = QuantizeQ15(m_cmd.z, M_CMD_FULL_SCALE_AM2, &m_sat);
-        sim_output.tau_raw_q15_x = QuantizeQ15(tau_raw.x, TAU_FULL_SCALE_NM, &tau_raw_sat);
-        sim_output.tau_raw_q15_y = QuantizeQ15(tau_raw.y, TAU_FULL_SCALE_NM, &tau_raw_sat);
-        sim_output.tau_raw_q15_z = QuantizeQ15(tau_raw.z, TAU_FULL_SCALE_NM, &tau_raw_sat);
-        sim_output.tau_proj_q15_x = QuantizeQ15(tau_proj.x, TAU_FULL_SCALE_NM, &tau_proj_sat);
-        sim_output.tau_proj_q15_y = QuantizeQ15(tau_proj.y, TAU_FULL_SCALE_NM, &tau_proj_sat);
-        sim_output.tau_proj_q15_z = QuantizeQ15(tau_proj.z, TAU_FULL_SCALE_NM, &tau_proj_sat);
-        sim_output.telemetry_flags = (uint8_t)(TELEMETRY_PACKET_VERSION & 0x0Fu);
-        sim_output.telemetry_flags |= (uint8_t)((m_sat & 0x01u) << 4);
-        sim_output.telemetry_flags |= (uint8_t)((tau_raw_sat & 0x01u) << 5);
-        sim_output.telemetry_flags |= (uint8_t)((tau_proj_sat & 0x01u) << 6);
-
-        if (HAL_UART_Transmit_IT(&huart2, (uint8_t *)&sim_output, sizeof(sim_output)) == HAL_OK)
-        {
-            last_telemetry_tick = current_tick;
-        }
-    }
-
-#else
     // === MODE C: REAL HARDWARE (Partial) ===
     // X and Y have no sensors, assume 0 measurement
     state.measured_current_x = 0.0f;
@@ -224,7 +153,6 @@ void InnerLoop_Update(void)
     state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
     state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
     state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
-#endif
 #endif
 
     // 3. Apply Command to H-Bridge Drivers (Axis 0=X, 1=Y, 2=Z)
