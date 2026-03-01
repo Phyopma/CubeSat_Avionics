@@ -1,6 +1,18 @@
 # CubeSat RTOS Transition Guide: Bare Metal to FreeRTOS
 
-This guide explains the architectural shift from a bare-metal "Super-Loop" to a multitasking FreeRTOS environment in the CubeSat project. If you've been working with the previous bare-metal commit (`d6722d4`), this document will help you master the new code in `ca16460`.
+This guide explains the architectural shift from a bare-metal "super-loop" to a multitasking FreeRTOS environment in the CubeSat project.
+
+## Branch Mapping
+
+Use this branch map as the source of truth for demos:
+
+| Branch | Runtime | Primary use |
+| :--- | :--- | :--- |
+| `fix/verbose-teleplot` | Bare-metal | Latest non-RTOS baseline with expanded Teleplot fields |
+| `demo-simulation` | FreeRTOS | Simulation/HITL demo path |
+| `demo-sensor` | FreeRTOS | On-board sensor logging demo path |
+
+The two RTOS demo branches are isolated by branch design. Do not toggle a simulation compile flag between them.
 
 ---
 
@@ -9,11 +21,11 @@ This guide explains the architectural shift from a bare-metal "Super-Loop" to a 
 ### Bare Metal (Super-Loop)
 In the previous version, everything happened in one big `while(1)` loop in `main.c`.
 ```c
-// Bare Metal Mental Model: "Sequential"
+// Bare metal mental model: sequential
 while (1) {
-    ReadSensors();    // If this takes 10ms, control lags!
-    RunControl();     // Runs at whatever frequency the loop allows.
-    SendTelemetry();  // If UART is slow, loop stalls.
+    ReadSensors();
+    RunControl();
+    SendTelemetry();
 }
 ```
 **Problem:** A slow sensor read or a long UART transmit directly delays your high-priority control loop.
@@ -21,7 +33,7 @@ while (1) {
 ### RTOS (Concurrent Tasks)
 In the current version, the work is split into independent **Tasks** (threads). Each task thinks it has the CPU to itself.
 ```c
-// RTOS Mental Model: "Parallel"
+// RTOS mental model: concurrent tasks
 void ControlTask() { 
     for(;;) { run_control(); vTaskDelay(1); } // Runs every 1ms
 }
@@ -73,7 +85,7 @@ Since tasks can stop each other at any line of code, sharing variables like `g_c
 ## 4. Master the Changes: Step-by-Step
 
 1.  **Study `app_runtime.c`**: See how `vTaskStartScheduler()` hands over control from `main()` to the RTOS.
-2.  **Compare `HAL_Delay` vs `vTaskDelay`**: 
+2.  **Compare `HAL_Delay` vs `vTaskDelay`**:
     - `HAL_Delay(10)` spins the CPU, wasting power and blocking other code.
     - `vTaskDelay(10)` puts the task to sleep, letting other tasks use the CPU.
 3.  **Trace a Control Tick**:
@@ -105,7 +117,7 @@ You might think: *"If an ISR blocks, shouldn't the scheduler just switch to anot
 **No.** Here is why:
 
 1.  **ISRs are not Tasks:** Tasks are managed by the RTOS software. ISRs are triggered by the hardware. An ISR is "above" the RTOS.
-2.  **ISRs Preempt the Scheduler:** When an hardware interrupt happens, the CPU stops *everything*—including the Scheduler—to run the ISR. If the ISR tries to "block" (sleep), the CPU would just hang because the thing that handles "sleeping" (the scheduler) is currently paused by the ISR!
+2.  **ISRs Preempt the Scheduler:** When a hardware interrupt happens, the CPU stops *everything* (including the scheduler) to run the ISR. If the ISR tries to block (sleep), the CPU would hang because the scheduler is paused by the ISR.
 3.  **No Context Saving:** Tasks have a "Stack" where their state is saved during a switch. ISRs often share a single system stack. They don't have a way to "pause and come back later" like a task does.
 
 ### RTOS Functions: Task vs. ISR

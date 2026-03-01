@@ -2,6 +2,16 @@
 
 Firmware for the CubeSat Magnetorquer Control System, running on the **STM32L476RG Nucleo** board. This project implements a high-frequency (1kHz) current control loop for magnetorquers, along with sensor integration for attitude determination.
 
+## Active Demo Branches
+
+These demo tracks are intentionally isolated. Select runtime behavior by branch, not by a simulation compile flag.
+
+| Branch | Runtime model | Purpose | Notes |
+| :--- | :--- | :--- | :--- |
+| `demo-simulation` | FreeRTOS | Simulation/HITL demo with Python host packet exchange | Simulation-only runtime path |
+| `demo-sensor` | FreeRTOS | On-board sensor logging demo over USB console | Sensor-only runtime path |
+| `fix/verbose-teleplot` | Bare-metal (super-loop) | Latest non-RTOS baseline with verbose Teleplot outputs | Use for legacy behavior comparison |
+
 ## Architecture
 
 The system is built on the STM32 HAL, with a layered architecture separating hardware drivers from control algorithms.
