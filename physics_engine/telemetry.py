@@ -48,6 +48,7 @@ class TelemetryManager:
             f"AngleError:{now_ms}:{angle_err:.3f}\n"
             f"SimTime:{now_ms}:{sim_time:.3f}\n"
             f"ADCS_Mode:{now_ms}:{adcs_mode_id}\n"
+            f"Mode:{now_ms}:{adcs_mode_id}\n"
             f"IntClampFW:{now_ms}:{int_clamp_fw}\n"
             f"ProjLossFW:{now_ms}:{proj_loss_fw:.6f}\n"
             f"TelemSatFlags:{now_ms}:{telemetry_flags}\n"
@@ -87,10 +88,35 @@ class TelemetryManager:
             f"PWM_X:{now_ms}:{pwm_cmd[0]:.6f}\n"
             f"PWM_Y:{now_ms}:{pwm_cmd[1]:.6f}\n"
             f"PWM_Z:{now_ms}:{pwm_cmd[2]:.6f}\n"
+            # Legacy aliases for old teleplot dashboards.
+            f"TargetX:{now_ms}:{target_i[0] * 1000.0:.6f}\n"
+            f"TargetY:{now_ms}:{target_i[1] * 1000.0:.6f}\n"
+            f"TargetZ:{now_ms}:{target_i[2] * 1000.0:.6f}\n"
+            f"CurrentX:{now_ms}:{actual_i[0] * 1000.0:.6f}\n"
+            f"CurrentY:{now_ms}:{actual_i[1] * 1000.0:.6f}\n"
+            f"CurrentZ:{now_ms}:{actual_i[2] * 1000.0:.6f}\n"
+            f"VoltX:{now_ms}:{pwm_cmd[0]:.6f}\n"
+            f"VoltY:{now_ms}:{pwm_cmd[1]:.6f}\n"
+            f"VoltZ:{now_ms}:{pwm_cmd[2]:.6f}\n"
         )
 
+        # Keep each UDP datagram modest to avoid fragmentation/drop in some Teleplot paths.
+        max_payload_bytes = 900
+        chunk = []
+        chunk_size = 0
         try:
-            self.sock.sendto(telemetry.encode(), self.addr)
+            for line in telemetry.splitlines():
+                wire_line = f"{line}\n"
+                wire_len = len(wire_line.encode())
+                if chunk and (chunk_size + wire_len > max_payload_bytes):
+                    self.sock.sendto("".join(chunk).encode(), self.addr)
+                    chunk = [wire_line]
+                    chunk_size = wire_len
+                else:
+                    chunk.append(wire_line)
+                    chunk_size += wire_len
+            if chunk:
+                self.sock.sendto("".join(chunk).encode(), self.addr)
         except Exception:
             pass  # Socket errors shouldn't crash sim
 
