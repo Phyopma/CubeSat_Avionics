@@ -19,10 +19,11 @@ from physics import SatellitePhysics
 from telemetry import TelemetryManager, VisualizerSender
 
 # --- Configuration ---
-SERIAL_PORT = "/dev/cu.usbmodem1103"  # Default Nucleo port
+SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz)
-TELEPLOT_ADDR = ("teleplot.fr", 61656)
+TELEPLOT_ADDR = ("teleplot.fr", 25862)
+USB_MODEM_PREFIX = "/dev/cu.usbmodem"
 FW_CONFIG_PATH = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
@@ -141,7 +142,20 @@ def get_args():
     parser.add_argument("--kd", type=float, default=0.17, help="Derivative gain for pointing mode")
 
     # Hardware
-    parser.add_argument("--port", type=str, default=SERIAL_PORT, help="Serial port for Nucleo board")
+    parser.add_argument(
+        "--port",
+        type=str,
+        default=None,
+        help="Serial port for Nucleo board (overrides --usb-number), e.g. /dev/cu.usbmodem21303",
+    )
+    parser.add_argument(
+        "--usb-number",
+        "--usbnumber",
+        type=str,
+        default=None,
+        help="USB modem suffix for /dev/cu.usbmodem<number> (or pass usbmodem<number>)",
+    )
+    parser.add_argument("--teleplot-port", type=int, default=TELEPLOT_ADDR[1], help="Teleplot UDP port")
     parser.add_argument("--debug", action="store_true", help="Enable detailed physics debug logging")
 
     # Physics Calibration
@@ -159,6 +173,21 @@ def get_args():
 
 def main():
     args = get_args()
+
+    if args.usb_number:
+        usb_suffix = str(args.usb_number).strip()
+        if usb_suffix.startswith(USB_MODEM_PREFIX):
+            usb_suffix = usb_suffix[len(USB_MODEM_PREFIX) :]
+        elif usb_suffix.startswith("usbmodem"):
+            usb_suffix = usb_suffix[len("usbmodem") :]
+        serial_port = f"{USB_MODEM_PREFIX}{usb_suffix}"
+    else:
+        serial_port = args.port if args.port else SERIAL_PORT
+
+    if args.teleplot_port <= 0 or args.teleplot_port > 65535:
+        print(f"ERROR: invalid --teleplot-port {args.teleplot_port} (must be 1..65535)", file=sys.stderr)
+        sys.exit(2)
+    teleplot_addr = (TELEPLOT_ADDR[0], args.teleplot_port)
 
     firmware_settings = read_firmware_settings()
     fw_max_voltage = firmware_settings["max_voltage"]
@@ -209,7 +238,8 @@ def main():
         max_src = "CLI" if args.max_voltage is not None else "host default"
         dip_src = "CLI" if args.dipole_strength is not None else "host default"
         print("--- ADCS Simulation Host v3.0 (HITL) ---")
-        print(f"Port: {args.port}")
+        print(f"Port: {serial_port}")
+        print(f"Teleplot: {teleplot_addr[0]}:{teleplot_addr[1]}")
         print(f"Gains: K_BDOT={args.kbdot:.0e}, K_P={args.kp}, K_I={args.ki}, K_D={args.kd}")
         print(f"Physics/FW override: MaxV={eff_max_voltage}V ({max_src}), Dipole={eff_dipole_strength}Am^2/A ({dip_src})")
         print(f"Override packet: max_voltage_mV={max_voltage_mV}, dipole_strength_milli={dipole_strength_milli}")
@@ -234,7 +264,7 @@ def main():
         dipole_strength=eff_dipole_strength,
         structural_constants=structural_constants,
     )
-    tel = TelemetryManager(TELEPLOT_ADDR)
+    tel = TelemetryManager(teleplot_addr)
     viz = VisualizerSender()
 
     # Set initial conditions based on scenario
@@ -256,14 +286,14 @@ def main():
     # Connect to firmware
     try:
         comms = SerialInterface(
-            args.port,
+            serial_port,
             BAUD_RATE,
             m_cmd_full_scale=fw_m_cmd_full_scale,
             tau_full_scale=fw_tau_full_scale,
             expected_telemetry_version=fw_telemetry_version,
         )
     except Exception as e:
-        print(f"ERROR: Cannot open port {args.port}: {e}")
+        print(f"ERROR: Cannot open port {serial_port}: {e}")
         print("Make sure the Nucleo board is connected and the port is correct.")
         sys.exit(1)
 
