@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // === CONFIGURATION: CONTROL MODE ===
-//#define MTQ_MODE_OPEN_LOOP
+// #define MTQ_MODE_OPEN_LOOP
 typedef struct
 {
     float target_current_x, target_current_y, target_current_z;

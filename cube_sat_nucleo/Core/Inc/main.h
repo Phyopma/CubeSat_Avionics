@@ -69,13 +69,9 @@ void Error_Handler(void);
 #define IMU_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-#define APP_ENABLE_SIMULATION 0  // 0: hardware/USB sensor-log checkpoint, 1: HITL simulation
+#define SIMULATION_MODE 0  // 0: hardware/USB console mode, 1: HITL simulation mode
 
-#if APP_ENABLE_SIMULATION
-#define SIMULATION_MODE 1
-#endif
-
-#ifdef SIMULATION_MODE
+#if SIMULATION_MODE
   // 1 byte alignment to ensure Python struct.pack() matches exactly
   typedef struct __attribute__((packed))
   {

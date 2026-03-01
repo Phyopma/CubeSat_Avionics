@@ -19,7 +19,8 @@ void HBridge_SetVoltage(uint8_t axis, float voltage, float max_supply)
 {
     // For now, only Z-axis (Axis 2) is connected to the physical H-Bridge on this board.
     // X and Y are simulated in firmware logic but don't drive pins yet.
-    if (axis != 2) {
+    if (axis != 2)
+    {
         return;
     }
 
