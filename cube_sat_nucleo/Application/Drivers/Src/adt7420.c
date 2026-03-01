@@ -1,5 +1,7 @@
 #include "adt7420.h"
 
+#define ADT7420_I2C_TIMEOUT_MS 20U
+
 typedef struct {
     volatile uint8_t request_pending;
     volatile uint8_t sample_valid;
@@ -11,11 +13,11 @@ static adt7420_async_state_t g_async_state = {0};
 
 static HAL_StatusTypeDef wr_u8(ADT7420_Handle *h, uint8_t reg, uint8_t val) {
     return HAL_I2C_Mem_Write(h->hi2c, (h->addr7 << 1), reg,
-                             I2C_MEMADD_SIZE_8BIT, &val, 1, HAL_MAX_DELAY);
+                             I2C_MEMADD_SIZE_8BIT, &val, 1, ADT7420_I2C_TIMEOUT_MS);
 }
 static HAL_StatusTypeDef rd_u8(ADT7420_Handle *h, uint8_t reg, uint8_t *val) {
     return HAL_I2C_Mem_Read(h->hi2c, (h->addr7 << 1), reg,
-                            I2C_MEMADD_SIZE_8BIT, val, 1, HAL_MAX_DELAY);
+                            I2C_MEMADD_SIZE_8BIT, val, 1, ADT7420_I2C_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef ADT7420_ReadID(ADT7420_Handle *h, uint8_t *id) {
@@ -39,7 +41,7 @@ HAL_StatusTypeDef ADT7420_ReadRaw(ADT7420_Handle *h, int16_t *raw) {
     HAL_StatusTypeDef st = HAL_I2C_Mem_Read(h->hi2c, (h->addr7 << 1),
                                             ADT7420_REG_TEMP_MSB,
                                             I2C_MEMADD_SIZE_8BIT,
-                                            buf, 2, HAL_MAX_DELAY);
+                                            buf, 2, ADT7420_I2C_TIMEOUT_MS);
     if (st != HAL_OK) return st;
     *raw = (int16_t)((buf[0] << 8) | buf[1]);
     return HAL_OK;

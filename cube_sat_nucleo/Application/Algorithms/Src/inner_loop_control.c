@@ -15,49 +15,63 @@ mtq_state_t state;
 static float runtime_voltage_limit = PIL_MAX_VOLTAGE;
 static volatile uint8_t g_state_valid = 0U;
 
-#ifndef SIMULATION_MODE
+#if !SIMULATION_MODE
 static float filtered_current_z = 0.0f; // Only Z has real sensor for now
 #endif
 
 // HITL Sync Flag
 volatile uint8_t sim_data_ready = 0;
 
-void InnerLoop_Update_SimDataAvailable(void) {
+void InnerLoop_Update_SimDataAvailable(void)
+{
     sim_data_ready = 1;
 }
 
-static float ClampF(float x, float lo, float hi) {
-    if (x < lo) return lo;
-    if (x > hi) return hi;
+static float ClampF(float x, float lo, float hi)
+{
+    if (x < lo)
+        return lo;
+    if (x > hi)
+        return hi;
     return x;
 }
 
-static int16_t QuantizeQ15(float value, float full_scale, uint8_t *saturated) {
-    if (full_scale <= 1e-12f) {
-        if (saturated != NULL) {
+static int16_t QuantizeQ15(float value, float full_scale, uint8_t *saturated)
+{
+    if (full_scale <= 1e-12f)
+    {
+        if (saturated != NULL)
+        {
             *saturated = 1u;
         }
         return 0;
     }
 
     float normalized = value / full_scale;
-    if (normalized > 1.0f) {
+    if (normalized > 1.0f)
+    {
         normalized = 1.0f;
-        if (saturated != NULL) {
+        if (saturated != NULL)
+        {
             *saturated = 1u;
         }
-    } else if (normalized < -1.0f) {
+    }
+    else if (normalized < -1.0f)
+    {
         normalized = -1.0f;
-        if (saturated != NULL) {
+        if (saturated != NULL)
+        {
             *saturated = 1u;
         }
     }
 
     float scaled = normalized * 32767.0f;
-    if (scaled >= 32767.0f) {
+    if (scaled >= 32767.0f)
+    {
         return 32767;
     }
-    if (scaled <= -32768.0f) {
+    if (scaled <= -32768.0f)
+    {
         return -32768;
     }
     return (int16_t)lroundf(scaled);
@@ -116,7 +130,7 @@ void InnerLoop_Update(void)
     state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
-#ifdef SIMULATION_MODE
+#if SIMULATION_MODE
     // === MODE B-Sim: HITL SIMULATION ===
     // 1. Read 3-axis currents from sim
     state.measured_current_x = sim_input.current_amps_x;
@@ -124,13 +138,17 @@ void InnerLoop_Update(void)
     state.measured_current_z = sim_input.current_amps_z;
 
     // 2. Run Control Logic when new data arrives
-    if (sim_data_ready) {
-        if (sim_input.debug_flags & 0x01) {
+    if (sim_data_ready)
+    {
+        if (sim_input.debug_flags & 0x01)
+        {
             // === OPEN LOOP OVERRIDE (Debug) ===
             state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
             state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
             state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
-        } else {
+        }
+        else
+        {
             // === CLOSED LOOP (PI) ===
             state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
             state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
@@ -142,7 +160,8 @@ void InnerLoop_Update(void)
     // 3. Send Output to Simulator (Rate Limited to 100Hz)
     static uint32_t last_telemetry_tick = 0;
     uint32_t current_tick = HAL_GetTick();
-    if (current_tick - last_telemetry_tick >= 10) { // 10ms = 100Hz
+    if (current_tick - last_telemetry_tick >= 10)
+    { // 10ms = 100Hz
         vec3_t m_cmd = {0.0f, 0.0f, 0.0f};
         vec3_t tau_raw = {0.0f, 0.0f, 0.0f};
         vec3_t tau_proj = {0.0f, 0.0f, 0.0f};
@@ -173,8 +192,10 @@ void InnerLoop_Update(void)
         sim_output.telemetry_flags |= (uint8_t)((tau_raw_sat & 0x01u) << 5);
         sim_output.telemetry_flags |= (uint8_t)((tau_proj_sat & 0x01u) << 6);
 
-        HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
-        last_telemetry_tick = current_tick;
+        if (HAL_UART_Transmit_IT(&huart2, (uint8_t *)&sim_output, sizeof(sim_output)) == HAL_OK)
+        {
+            last_telemetry_tick = current_tick;
+        }
     }
 
 #else
@@ -183,8 +204,14 @@ void InnerLoop_Update(void)
     state.measured_current_x = 0.0f;
     state.measured_current_y = 0.0f;
 
-    // Z-Axis: Read Raw Hardware Value
-    float raw_val_z = CurrentSensor_Read_Amps();
+    // Z-axis current sample is produced asynchronously in task context.
+    // Do not touch I2C from TIM6 ISR path.
+    float sampled_current_z = 0.0f;
+    float raw_val_z = fabsf(filtered_current_z);
+    if (CurrentSensor_GetLatestSample(&sampled_current_z, NULL, HAL_GetTick()) != 0)
+    {
+        raw_val_z = fabsf(sampled_current_z);
+    }
 
     // Inject Sign (Polarity logic for Z)
     float signed_raw_z = (state.command_voltage_z < 0.0f) ? -1.0f * fabsf(raw_val_z) : fabsf(raw_val_z);
@@ -215,7 +242,8 @@ mtq_state_t InnerLoop_GetState(void)
 int InnerLoop_GetStateSnapshot(mtq_state_t *out, uint32_t timeout_ms)
 {
     (void)timeout_ms;
-    if (out == NULL || g_state_valid == 0U) {
+    if (out == NULL || g_state_valid == 0U)
+    {
         return 0;
     }
     *out = state;
