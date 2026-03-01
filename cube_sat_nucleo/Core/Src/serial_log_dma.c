@@ -20,13 +20,17 @@ static volatile uint8_t g_q_count = 0;
 static volatile uint32_t g_drop_count = 0;
 static char g_tx_buf[LOG_BUF_SZ];
 static volatile uint8_t g_kick_tx = 0U;
+static volatile uint32_t g_tx_start_ms = 0U;
+
+#define LOG_DMA_STUCK_TIMEOUT_MS 100U
 
 void serial_log_init(UART_HandleTypeDef *huart) { g_huart = huart; }
 
 static bool queue_push(const char *msg, size_t n)
 {
     taskENTER_CRITICAL();
-    if (g_q_count >= LOG_QUEUE_DEPTH) {
+    if (g_q_count >= LOG_QUEUE_DEPTH)
+    {
         taskEXIT_CRITICAL();
         g_drop_count++;
         return false;
@@ -43,12 +47,14 @@ static bool queue_push(const char *msg, size_t n)
 static bool queue_pop(char *out, size_t out_sz)
 {
     taskENTER_CRITICAL();
-    if (g_q_count == 0 || out_sz == 0U) {
+    if (g_q_count == 0 || out_sz == 0U)
+    {
         taskEXIT_CRITICAL();
         return false;
     }
     size_t n = strnlen(g_queue[g_q_head], LOG_BUF_SZ);
-    if (n >= out_sz) {
+    if (n >= out_sz)
+    {
         n = out_sz - 1U;
     }
     memcpy(out, g_queue[g_q_head], n);
@@ -61,7 +67,8 @@ static bool queue_pop(char *out, size_t out_sz)
 
 void log_printf_async(const char *fmt, ...)
 {
-    if (!g_huart) {
+    if (!g_huart)
+    {
         return;
     }
     char msg[LOG_BUF_SZ];
@@ -69,10 +76,12 @@ void log_printf_async(const char *fmt, ...)
     va_start(ap, fmt);
     int n = vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    if (n < 0) {
+    if (n < 0)
+    {
         return;
     }
-    if ((size_t)n + 2U < sizeof(msg)) {
+    if ((size_t)n + 2U < sizeof(msg))
+    {
         msg[n++] = '\r';
         msg[n++] = '\n';
         msg[n] = '\0';
@@ -87,31 +96,61 @@ void log_printf_dma(const char *fmt, ...)
     va_start(ap, fmt);
     int n = vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    if (n < 0) {
+    if (n < 0)
+    {
         return;
     }
-    if ((size_t)n + 2U < sizeof(msg)) {
+    if ((size_t)n + 2U < sizeof(msg))
+    {
         msg[n++] = '\r';
         msg[n++] = '\n';
         msg[n] = '\0';
     }
-    if (queue_push(msg, (size_t)n)) {
+    if (queue_push(msg, (size_t)n))
+    {
         serial_log_process_tx();
     }
 }
 
 void serial_log_process_tx(void)
 {
-    if (!g_huart || g_tx_busy) {
+    if (!g_huart)
+    {
+        return;
+    }
+
+    if (g_tx_busy)
+    {
+        uint32_t now_ms = HAL_GetTick();
+
+        // Recover when DMA complete callback is lost but UART state is already READY.
+        if (HAL_UART_GetState(g_huart) == HAL_UART_STATE_READY)
+        {
+            g_tx_busy = 0U;
+        }
+        // Hard timeout recovery for stuck DMA state.
+        else if ((uint32_t)(now_ms - g_tx_start_ms) > LOG_DMA_STUCK_TIMEOUT_MS)
+        {
+            (void)HAL_UART_DMAStop(g_huart);
+            g_tx_busy = 0U;
+            g_drop_count++;
+        }
+    }
+
+    if (g_tx_busy)
+    {
         return;
     }
     g_kick_tx = 0U;
-    if (!queue_pop(g_tx_buf, sizeof(g_tx_buf))) {
+    if (!queue_pop(g_tx_buf, sizeof(g_tx_buf)))
+    {
         return;
     }
     g_tx_busy = 1;
+    g_tx_start_ms = HAL_GetTick();
     g_kick_tx = 0U;
-    if (HAL_UART_Transmit_DMA(g_huart, (uint8_t *)g_tx_buf, (uint16_t)strnlen(g_tx_buf, sizeof(g_tx_buf))) != HAL_OK) {
+    if (HAL_UART_Transmit_DMA(g_huart, (uint8_t *)g_tx_buf, (uint16_t)strnlen(g_tx_buf, sizeof(g_tx_buf))) != HAL_OK)
+    {
         g_tx_busy = 0;
     }
 }
@@ -123,7 +162,8 @@ uint32_t serial_log_drop_count(void)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == g_huart) {
+    if (huart == g_huart)
+    {
         g_tx_busy = 0;
         g_kick_tx = 1U;
     }

@@ -3,6 +3,7 @@
  */
 
 #include "imu_bno085.h"
+#include "config.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -21,6 +22,7 @@
 #define SCALE_Q9  (1.0f / 512.0f)
 // Magnetic Field (Q4) -> uTesla
 #define SCALE_Q4  (1.0f / 16.0f)
+#define GRAVITY_MPS2 9.80665f
 
 // --- Local SPI Helper Functions ---
 
@@ -142,44 +144,79 @@ static bool BNO085_SetFeature(bno085_t* dev, uint8_t report_id, uint32_t interva
 }
 
 // --- Report Parsing ---
+static bool bno085_try_derive_lin_from_quat(const bno085_t *dev, bno085_vec3_t *out_lin)
+{
+    const bno085_quat_t *q = &dev->quat;
+    float w = q->real;
+    float x = q->i;
+    float y = q->j;
+    float z = q->k;
+    float norm = (w * w) + (x * x) + (y * y) + (z * z);
+    if (norm < 0.10f) {
+        return false;
+    }
 
-static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n) {
+    // Gravity direction in body frame from quaternion (Android/SH-2 convention).
+    float gx = 2.0f * ((x * z) - (w * y));
+    float gy = 2.0f * ((w * x) + (y * z));
+    float gz = (w * w) - (x * x) - (y * y) + (z * z);
+
+    out_lin->x = dev->accel.x - (gx * GRAVITY_MPS2);
+    out_lin->y = dev->accel.y - (gy * GRAVITY_MPS2);
+    out_lin->z = dev->accel.z - (gz * GRAVITY_MPS2);
+    out_lin->valid = true;
+    return true;
+}
+
+static uint16_t bno085_report_len_for_id(uint8_t report_id)
+{
+    switch (report_id) {
+        case SHTP_REPORT_BASE_TIMESTAMP:
+        case SHTP_REPORT_TIMESTAMP_REBASE:
+            return 5U;   // ID + 4-byte delta
+
+        case SHTP_REPORT_ACCELEROMETER:
+        case SHTP_REPORT_GYROSCOPE:
+        case SHTP_REPORT_MAGNETIC_FIELD:
+        case SHTP_REPORT_MAGNETIC_FIELD_UNCAL:
+        case SHTP_REPORT_LINEAR_ACCELERATION:
+        case SHTP_REPORT_GRAVITY:
+        case SHTP_REPORT_RAW_ACCELEROMETER:
+        case SHTP_REPORT_RAW_GYROSCOPE:
+        case SHTP_REPORT_RAW_MAGNETOMETER:
+            return 10U;  // ID + Seq + Status + Delay + XYZ
+
+        case SHTP_REPORT_ROTATION_VECTOR:
+        case SHTP_REPORT_GEOMAGNETIC_RV:
+        case SHTP_REPORT_ARVR_STAB_RV:
+            return 14U;  // ID + Seq + Status + Delay + quat + accuracy
+
+        case SHTP_REPORT_GAME_ROTATION_VECTOR:
+        case SHTP_REPORT_ARVR_STAB_GRV:
+            return 12U;  // ID + Seq + Status + Delay + quat
+
+        case SHTP_REPORT_GYROSCOPE_UNCAL:
+            return 16U;  // ID + Seq + Status + Delay + XYZ + biasXYZ
+
+        case SHTP_REPORT_SET_FEATURE_COMMAND:
+            return 17U;
+        case SHTP_REPORT_PRODUCT_ID:
+            return 16U;
+        default:
+            return 0U;
+    }
+}
+
+static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n, uint8_t channel) {
+    static uint8_t seen_report_id[256] = {0};
     uint16_t idx = 0;
     while (idx < n) {
         uint8_t report_id = p[idx];
-        uint16_t report_len = 0;
+        uint16_t report_len = bno085_report_len_for_id(report_id);
 
-        // Determine report length based on ID
-        switch (report_id) {
-            case SHTP_REPORT_ROTATION_VECTOR:
-                report_len = 14; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(10)
-                break;
-            case SHTP_REPORT_GAME_ROTATION_VECTOR:
-                report_len = 12; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(8)
-                break;
-            case SHTP_REPORT_LINEAR_ACCELERATION:
-            case SHTP_REPORT_GYROSCOPE:
-            case SHTP_REPORT_MAGNETIC_FIELD:
-                report_len = 10; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Data(6)
-                break;
-
-            // *** THE MISSING FIX IS HERE ***
-            case SHTP_REPORT_TIMESTAMP_REBASE:
-                report_len = 5; // ID(1)+Seq(1)+Stat(1)+Delay(1) + Time(1)
-                break;
-
-            case SHTP_REPORT_BASE_TIMESTAMP:
-                report_len = 5;
-                break;
-            case SHTP_REPORT_SET_FEATURE_COMMAND:
-                report_len = 17;
-                break;
-            case SHTP_REPORT_PRODUCT_ID:
-                report_len = 16;
-                break;
-            default:
-                report_len = 0; // Still unknown
-                break;
+        if (seen_report_id[report_id] == 0U) {
+            seen_report_id[report_id] = 1U;
+            log_printf_dma("BNO085 report id seen ch=%u id=0x%02X", channel, report_id);
         }
 
         // Safety check: Ensure we don't read past the buffer
@@ -225,6 +262,24 @@ static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n) {
                 dev->lin_accel.z = (float)z * SCALE_Q8;
                 dev->lin_accel.valid = true;
             }
+            else if (report_id == SHTP_REPORT_ACCELEROMETER) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+                dev->accel.x = (float)x * SCALE_Q8;
+                dev->accel.y = (float)y * SCALE_Q8;
+                dev->accel.z = (float)z * SCALE_Q8;
+                dev->accel.valid = true;
+            }
+            else if (report_id == SHTP_REPORT_GRAVITY) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+                dev->gravity.x = (float)x * SCALE_Q8;
+                dev->gravity.y = (float)y * SCALE_Q8;
+                dev->gravity.z = (float)z * SCALE_Q8;
+                dev->gravity.valid = true;
+            }
             else if (report_id == SHTP_REPORT_GYROSCOPE) {
                 int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
                 int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
@@ -245,13 +300,58 @@ static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n) {
                 dev->mag.z = (float)z * SCALE_Q4;
                 dev->mag.valid = true;
             }
+            else if (report_id == SHTP_REPORT_MAGNETIC_FIELD_UNCAL) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+                dev->mag.x = (float)x * SCALE_Q4;
+                dev->mag.y = (float)y * SCALE_Q4;
+                dev->mag.z = (float)z * SCALE_Q4;
+                dev->mag.valid = true;
+                static uint8_t logged_uncal_mag = 0U;
+                if (logged_uncal_mag == 0U) {
+                    logged_uncal_mag = 1U;
+                    log_printf_dma("BNO085 using uncalibrated magnetic field fallback (id=0x0F)");
+                }
+            }
+
+            // Fallback path when dedicated 0x04 stream is unavailable.
+            if (dev->lin_accel.valid == false && dev->accel.valid == true) {
+                uint8_t used_fallback = 0U;
+                if (dev->gravity.valid == true) {
+                    dev->lin_accel.x = dev->accel.x - dev->gravity.x;
+                    dev->lin_accel.y = dev->accel.y - dev->gravity.y;
+                    dev->lin_accel.z = dev->accel.z - dev->gravity.z;
+                    dev->lin_accel.valid = true;
+                    used_fallback = 1U;
+                    static uint8_t logged_lin_gravity_fallback = 0U;
+                    if (logged_lin_gravity_fallback == 0U) {
+                        logged_lin_gravity_fallback = 1U;
+                        log_printf_dma("BNO085 using linear accel fallback: accel-gravity");
+                    }
+                } else if (bno085_try_derive_lin_from_quat(dev, &dev->lin_accel)) {
+                    used_fallback = 1U;
+                    static uint8_t logged_lin_quat_fallback = 0U;
+                    if (logged_lin_quat_fallback == 0U) {
+                        logged_lin_quat_fallback = 1U;
+                        log_printf_dma("BNO085 using linear accel fallback: accel-quaternion-gravity");
+                    }
+                }
+                (void)used_fallback;
+            }
 
             // Move to the next report in the buffer
             idx += report_len;
         }
         else {
-            // Unknown ID or truncated buffer.
-            // We MUST break to avoid infinite loops or reading garbage.
+            // Don't byte-scan on unknown/truncated reports; it can desync all
+            // following report boundaries in this packet.
+            static uint8_t seen_bad_id[256] = {0};
+            if (seen_bad_id[report_id] == 0U) {
+                seen_bad_id[report_id] = 1U;
+                log_printf_dma("WARN BNO085 unknown/truncated report ch=%u id=0x%02X n=%u idx=%u",
+                               channel, report_id, (unsigned)n, (unsigned)idx);
+            }
             break;
         }
     }
@@ -281,6 +381,44 @@ bool BNO085_WaitForAck(bno085_t* dev) {
     return false;
 }
 
+static bool BNO085_WaitForFeatureResponse(bno085_t* dev, uint8_t feature_id, uint32_t timeout_ms) {
+    uint32_t t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < timeout_ms) {
+        uint8_t ch = 0;
+        if (BNO085_Service(dev, &ch) && ch == SHTP_CHANNEL_CONTROL) {
+            // Get Feature Response: report ID 0xFC, byte1 = feature report ID
+            if (dev->rx_buf[0] == 0xFC) {
+                uint8_t resp_feature_id = dev->rx_buf[1];
+                uint32_t resp_interval_us =
+                    ((uint32_t)dev->rx_buf[8] << 24) |
+                    ((uint32_t)dev->rx_buf[7] << 16) |
+                    ((uint32_t)dev->rx_buf[6] << 8) |
+                    (uint32_t)dev->rx_buf[5];
+                BNO085_Log("BNO085 feature rsp id=0x%02X interval_us=%lu\r\n",
+                           resp_feature_id, (unsigned long)resp_interval_us);
+                if (resp_feature_id == feature_id) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static bool BNO085_EnableFeatureWithResponse(bno085_t* dev,
+                                             uint8_t feature_id,
+                                             uint32_t interval_us,
+                                             const char* name) {
+    if (!BNO085_SetFeature(dev, feature_id, interval_us)) {
+        return false;
+    }
+    if (!BNO085_WaitForFeatureResponse(dev, feature_id, 500U)) {
+        BNO085_Log("WARN no feature response for %s (id=0x%02X)\r\n", name, feature_id);
+        return false;
+    }
+    return true;
+}
+
 bool BNO085_Begin(bno085_t* dev) {
     memset(dev, 0, sizeof(*dev));
     BNO085_Reset();
@@ -293,10 +431,38 @@ bool BNO085_Begin(bno085_t* dev) {
         HAL_Delay(1);
     }
 
-    // Enable Sensors
+    // Enable sensors and verify each one is accepted by SH-2.
     BNO085_Log("Enabling Rotation Vector...\r\n");
-    if (!BNO085_EnableRotationVector(dev, 10000)) return false;
-    if (!BNO085_WaitForAck(dev)) return false;
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_ROTATION_VECTOR, BNO085_REPORT_INTERVAL_US, "Rotation Vector")) return false;
+
+    BNO085_Log("Enabling Game Rotation Vector...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GAME_ROTATION_VECTOR, BNO085_REPORT_INTERVAL_US, "Game Rotation Vector")) return false;
+
+    BNO085_Log("Enabling Gyroscope...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GYROSCOPE, BNO085_REPORT_INTERVAL_US, "Gyroscope")) return false;
+
+    BNO085_Log("Enabling Magnetic Field...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_MAGNETIC_FIELD, BNO085_REPORT_INTERVAL_US, "Magnetic Field")) return false;
+
+    BNO085_Log("Enabling Linear Acceleration...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_LINEAR_ACCELERATION, BNO085_REPORT_INTERVAL_US, "Linear Acceleration")) return false;
+
+    // Optional fallback streams for boards/firmware variants that may not
+    // emit 0x03/0x04 consistently even after accepting Set Feature.
+    BNO085_Log("Enabling Accelerometer (fallback)...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_ACCELEROMETER, BNO085_REPORT_INTERVAL_US, "Accelerometer")) {
+        BNO085_Log("WARN fallback stream unavailable: Accelerometer\r\n");
+    }
+
+    BNO085_Log("Enabling Gravity (fallback)...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GRAVITY, BNO085_REPORT_INTERVAL_US, "Gravity")) {
+        BNO085_Log("WARN fallback stream unavailable: Gravity\r\n");
+    }
+
+    BNO085_Log("Enabling Magnetic Field Uncal (fallback)...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_MAGNETIC_FIELD_UNCAL, BNO085_REPORT_INTERVAL_US, "Magnetic Field Uncal")) {
+        BNO085_Log("WARN fallback stream unavailable: Magnetic Field Uncal\r\n");
+    }
 
     return true;
 }
@@ -311,11 +477,20 @@ bool BNO085_EnableGameRotationVector(bno085_t* dev, uint32_t interval_us) {
 bool BNO085_EnableLinearAccelerometer(bno085_t* dev, uint32_t interval_us) {
     return BNO085_SetFeature(dev, SHTP_REPORT_LINEAR_ACCELERATION, interval_us);
 }
+bool BNO085_EnableAccelerometer(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_ACCELEROMETER, interval_us);
+}
+bool BNO085_EnableGravity(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_GRAVITY, interval_us);
+}
 bool BNO085_EnableGyroscope(bno085_t* dev, uint32_t interval_us) {
     return BNO085_SetFeature(dev, SHTP_REPORT_GYROSCOPE, interval_us);
 }
 bool BNO085_EnableMagnetometer(bno085_t* dev, uint32_t interval_us) {
     return BNO085_SetFeature(dev, SHTP_REPORT_MAGNETIC_FIELD, interval_us);
+}
+bool BNO085_EnableMagnetometerUncal(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_MAGNETIC_FIELD_UNCAL, interval_us);
 }
 
 bool BNO085_Service(bno085_t* dev, uint8_t* channel_read) {
@@ -330,9 +505,10 @@ bool BNO085_Service(bno085_t* dev, uint8_t* channel_read) {
 
     if (channel_read != NULL) *channel_read = ch;
 
-//    if (ch == SHTP_CHANNEL_REPORTS || ch == SHTP_CHANNEL_GYRO_ROTATION_VECTOR) {
-    if (ch == SHTP_CHANNEL_REPORTS){
-        parse_reports(dev, dev->rx_buf, n);
+    if (ch == SHTP_CHANNEL_REPORTS ||
+        ch == SHTP_CHANNEL_WAKE_REPORTS ||
+        ch == SHTP_CHANNEL_GYRO_ROTATION_VECTOR) {
+        parse_reports(dev, dev->rx_buf, n, ch);
     }
 
     return true;
@@ -384,5 +560,5 @@ void BNO085_Log(const char* fmt, ...) {
     if (len <= 0) {
         return;
     }
-    log_printf_async("%s", buf);
+    log_printf_dma("%s", buf);
 }

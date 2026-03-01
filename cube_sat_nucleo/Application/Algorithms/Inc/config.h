@@ -65,6 +65,8 @@
 #define SENSOR_LOG_PRINT_PERIOD_MS 100U   // Consolidated sensor line print period
 #define SENSOR_SAMPLE_PERIOD_MS    10U    // Async sensor sample service period
 #define ADT7420_I2C_ADDR_7BIT      0x48U  // ADT7420 default address
+#define HARDWARE_TELEPLOT_ENABLE   0U     // 0: off for console-debug clarity, 1: emit >Teleplot lines on hardware mode
+#define BNO085_REPORT_INTERVAL_US  50000U // 20 Hz sensor reports to reduce bus/load and improve multi-report stability
 
 // Simulation telemetry quantization (HITL packet v2)
 // Values are encoded as int16 Q15 fractions of these full-scale magnitudes.

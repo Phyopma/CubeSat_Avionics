@@ -36,7 +36,7 @@ void CurrentSensor_Init(void)
 {
 	// 1. Reset INA219
 	write_reg(REG_CONFIG, 0x8000);
-	HAL_Delay(10);
+	// Keep init non-blocking before scheduler start.
 
 	// 2. Calibrate
 	// Value 4096 is standard for 0.1 Ohm shunt, 32V range, 2A max
