@@ -19,10 +19,10 @@ from physics import SatellitePhysics
 from telemetry import TelemetryManager, VisualizerSender
 
 # --- Configuration ---
-SERIAL_PORT = "/dev/cu.usbmodem21303"  # Default Nucleo port
+SERIAL_PORT = "COM3"  # Default Nucleo port
 BAUD_RATE = 115200
 DT = 0.01  # Physics step size = 10ms (100Hz)
-TELEPLOT_ADDR = ("teleplot.fr", 25862)
+TELEPLOT_ADDR = ("teleplot.fr", 20920)
 USB_MODEM_PREFIX = "/dev/cu.usbmodem"
 FW_CONFIG_PATH = os.path.abspath(
     os.path.join(
@@ -485,6 +485,7 @@ def main():
                 ])
                 tel.send_3d_vector("BodyZ,3D", (0, 0, 0), body_z_inertial, "#00ffff", scale=2.5, thickness=0.08)
                 tel.send_3d_plane("B-Plane,3D", b_inertial, "#FFFFFF", size=5.0, opacity=0.3)
+                tel.send_3d_vector("BFieldECI,3D", (0, 0, 0), b_inertial, "#ffaa00", scale=50000.0, thickness=0.06)
 
                 r_body_to_inertial = sat._quat_to_dcm(q)
                 tau_applied_eci = r_body_to_inertial @ torque_applied
@@ -492,7 +493,7 @@ def main():
                 tau_proj_eci = r_body_to_inertial @ tau_proj_fw
                 tel.send_3d_vector("TauApplied,3D", (0, 0, 0), tau_applied_eci, "#ff00ff", scale=1e5, thickness=0.1)
                 tel.send_3d_vector("TauRawFW,3D", (0, 0, 0), tau_raw_eci, "#ff6600", scale=1e4, thickness=0.08)
-                tel.send_3d_vector("TauProjFW,3D", (0, 0, 0), tau_proj_eci, "#ffff00", scale=1e5, thickness=0.08)
+                tel.send_3d_vector("TauProjFW,3D", (0, 0, 0), tau_proj_eci, "#000000", scale=1e5, thickness=0.08)
 
                 # Stability check: τ·ω < 0 means damping
                 work_rate = float(np.dot(torque_applied, w))
