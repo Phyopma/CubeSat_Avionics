@@ -4,6 +4,12 @@
 #include <stdint.h>
 #include "main.h"
 
+/*
+ * INA219_SIMULATION_MODE is used to inject fake values and verify that the driver
+ * returns expected results.
+ */
+#define INA219_SIMULATION_MODE 1
+
 #define INA219_ADDR (0x40 << 1)
 
 // Registers

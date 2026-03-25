@@ -61,7 +61,7 @@ static void app_control_step(void)
 static void app_sensor_step(void)
 {
     uint32_t now_ms = HAL_GetTick();
-    CurrentSensor_RunAsyncSample();
+    CurrentSensor_ProcessSample();
     CurrentSensor_SubmitSampleRequest();
 
     (void)now_ms;
@@ -69,6 +69,7 @@ static void app_sensor_step(void)
 
 static void app_telemetry_step(void)
 {
+
 }
 
 static void app_imu_step(void)
@@ -91,10 +92,10 @@ void AppRuntime_OnControlTickFromISR(void)
 static void CurrentSensorTask(void *argument)
 {
     (void)argument;
-    TickType_t next_wake = xTaskGetTickCount();
+    TickType_t last_wake_time = xTaskGetTickCount();
     for (;;)
     {
-        vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
         app_sensor_step();
     }
 }
@@ -102,10 +103,10 @@ static void CurrentSensorTask(void *argument)
 static void ImuTask(void *argument)
 {
     (void)argument;
-    TickType_t next_wake = xTaskGetTickCount();
+    TickType_t last_wake_time = xTaskGetTickCount();
     for (;;)
     {
-        vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(IMU_SERVICE_PERIOD_MS));
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(IMU_SERVICE_PERIOD_MS));
         app_imu_step();
     }
 }
@@ -113,10 +114,12 @@ static void ImuTask(void *argument)
 static void TelemetryTask(void *argument)
 {
     (void)argument;
-    TickType_t next_wake = xTaskGetTickCount();
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(TELEMETRY_PERIOD_MS);
+
     for (;;)
     {
-        vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
+        vTaskDelayUntil(&last_wake_time, period);
         app_telemetry_step();
     }
 }
