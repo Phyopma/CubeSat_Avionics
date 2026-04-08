@@ -96,7 +96,9 @@ typedef struct {
     bno085_vec3_t accel;         // Calibrated Accelerometer (m/s^2)
     bno085_vec3_t gravity;       // Gravity vector (m/s^2)
     bno085_vec3_t gyro;          // Calibrated Gyro (rad/s)
-    bno085_vec3_t mag;           // Magnetic Field (uTesla)
+    bno085_vec3_t mag;           // Calibrated Magnetic Field (uTesla)
+    bno085_vec3_t mag_uncal;     // Uncalibrated Magnetic Field (uTesla)
+    bno085_vec3_t mag_raw;       // Raw Magnetic Field (ADC units)
 
 } bno085_t;
 
@@ -116,6 +118,7 @@ bool BNO085_EnableGravity(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableGyroscope(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableMagnetometer(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableMagnetometerUncal(bno085_t* dev, uint32_t interval_us);
+bool BNO085_EnableRawMagnetometer(bno085_t* dev, uint32_t interval_us);
 
 // --- Get Data ---
 bool BNO085_GetQuaternion(bno085_t* dev, bno085_quat_t* out);
@@ -123,5 +126,7 @@ bool BNO085_GetGameQuaternion(bno085_t* dev, bno085_quat_t* out);
 bool BNO085_GetLinearAcceleration(bno085_t* dev, bno085_vec3_t* out);
 bool BNO085_GetGyroscope(bno085_t* dev, bno085_vec3_t* out);
 bool BNO085_GetMagnetometer(bno085_t* dev, bno085_vec3_t* out);
+bool BNO085_GetMagnetometerUncal(bno085_t* dev, bno085_vec3_t* out);
+bool BNO085_GetMagnetometerRaw(bno085_t* dev, bno085_vec3_t* out);
 
 #endif /* APPLICATION_DRIVERS_INC_IMU_BNO085_H_ */

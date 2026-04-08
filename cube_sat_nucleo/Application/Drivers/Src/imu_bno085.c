@@ -181,10 +181,12 @@ static uint16_t bno085_report_len_for_id(uint8_t report_id)
         case SHTP_REPORT_MAGNETIC_FIELD_UNCAL:
         case SHTP_REPORT_LINEAR_ACCELERATION:
         case SHTP_REPORT_GRAVITY:
+            return 10U;  // ID + Seq + Status + Delay + XYZ
+
         case SHTP_REPORT_RAW_ACCELEROMETER:
         case SHTP_REPORT_RAW_GYROSCOPE:
         case SHTP_REPORT_RAW_MAGNETOMETER:
-            return 10U;  // ID + Seq + Status + Delay + XYZ
+            return 16U;  // ID + Seq + Status + Delay + XYZ + reserved + timestamp
 
         case SHTP_REPORT_ROTATION_VECTOR:
         case SHTP_REPORT_GEOMAGNETIC_RV:
@@ -304,15 +306,25 @@ static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n, uint8_t c
                 int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
                 int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
                 int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
-                dev->mag.x = (float)x * SCALE_Q4;
-                dev->mag.y = (float)y * SCALE_Q4;
-                dev->mag.z = (float)z * SCALE_Q4;
-                dev->mag.valid = true;
+                dev->mag_uncal.x = (float)x * SCALE_Q4;
+                dev->mag_uncal.y = (float)y * SCALE_Q4;
+                dev->mag_uncal.z = (float)z * SCALE_Q4;
+                dev->mag_uncal.valid = true;
                 static uint8_t logged_uncal_mag = 0U;
                 if (logged_uncal_mag == 0U) {
                     logged_uncal_mag = 1U;
                     log_printf_dma("BNO085 using uncalibrated magnetic field fallback (id=0x0F)");
                 }
+            }
+            else if (report_id == SHTP_REPORT_RAW_MAGNETOMETER) {
+                int16_t x = (int16_t)((p[data_idx+1]<<8) | p[data_idx]);
+                int16_t y = (int16_t)((p[data_idx+3]<<8) | p[data_idx+2]);
+                int16_t z = (int16_t)((p[data_idx+5]<<8) | p[data_idx+4]);
+
+                dev->mag_raw.x = (float)x;
+                dev->mag_raw.y = (float)y;
+                dev->mag_raw.z = (float)z;
+                dev->mag_raw.valid = true;
             }
 
             // Fallback path when dedicated 0x04 stream is unavailable.
@@ -349,8 +361,21 @@ static void parse_reports(bno085_t* dev, const uint8_t* p, uint16_t n, uint8_t c
             static uint8_t seen_bad_id[256] = {0};
             if (seen_bad_id[report_id] == 0U) {
                 seen_bad_id[report_id] = 1U;
+                char dump[96];
+                size_t used = 0U;
+                uint16_t limit = (n < 8U) ? n : 8U;
+                for (uint16_t i = 0U; i < limit && used + 4U < sizeof(dump); ++i) {
+                    int wrote = snprintf(&dump[used], sizeof(dump) - used, "%02X%s",
+                                         p[i], (i + 1U < limit) ? " " : "");
+                    if (wrote <= 0) {
+                        break;
+                    }
+                    used += (size_t)wrote;
+                }
+                dump[(used < sizeof(dump)) ? used : (sizeof(dump) - 1U)] = '\0';
                 log_printf_dma("WARN BNO085 unknown/truncated report ch=%u id=0x%02X n=%u idx=%u",
                                channel, report_id, (unsigned)n, (unsigned)idx);
+                log_printf_dma("WARN BNO085 bad payload bytes: %s", dump);
             }
             break;
         }
@@ -431,37 +456,12 @@ bool BNO085_Begin(bno085_t* dev) {
         HAL_Delay(1);
     }
 
-    // Enable sensors and verify each one is accepted by SH-2.
-    BNO085_Log("Enabling Rotation Vector...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_ROTATION_VECTOR, BNO085_REPORT_INTERVAL_US, "Rotation Vector")) return false;
-
-    BNO085_Log("Enabling Game Rotation Vector...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GAME_ROTATION_VECTOR, BNO085_REPORT_INTERVAL_US, "Game Rotation Vector")) return false;
-
-    BNO085_Log("Enabling Gyroscope...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GYROSCOPE, BNO085_REPORT_INTERVAL_US, "Gyroscope")) return false;
-
-    BNO085_Log("Enabling Magnetic Field...\r\n");
+    BNO085_Log("Enabling Magnetic Field (underlying)...\r\n");
     if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_MAGNETIC_FIELD, BNO085_REPORT_INTERVAL_US, "Magnetic Field")) return false;
 
-    BNO085_Log("Enabling Linear Acceleration...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_LINEAR_ACCELERATION, BNO085_REPORT_INTERVAL_US, "Linear Acceleration")) return false;
-
-    // Optional fallback streams for boards/firmware variants that may not
-    // emit 0x03/0x04 consistently even after accepting Set Feature.
-    BNO085_Log("Enabling Accelerometer (fallback)...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_ACCELEROMETER, BNO085_REPORT_INTERVAL_US, "Accelerometer")) {
-        BNO085_Log("WARN fallback stream unavailable: Accelerometer\r\n");
-    }
-
-    BNO085_Log("Enabling Gravity (fallback)...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_GRAVITY, BNO085_REPORT_INTERVAL_US, "Gravity")) {
-        BNO085_Log("WARN fallback stream unavailable: Gravity\r\n");
-    }
-
-    BNO085_Log("Enabling Magnetic Field Uncal (fallback)...\r\n");
-    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_MAGNETIC_FIELD_UNCAL, BNO085_REPORT_INTERVAL_US, "Magnetic Field Uncal")) {
-        BNO085_Log("WARN fallback stream unavailable: Magnetic Field Uncal\r\n");
+    BNO085_Log("Enabling Raw Magnetometer...\r\n");
+    if (!BNO085_EnableFeatureWithResponse(dev, SHTP_REPORT_RAW_MAGNETOMETER, BNO085_REPORT_INTERVAL_US, "Raw Magnetometer")) {
+        BNO085_Log("WARN raw stream unavailable: Raw Magnetometer\r\n");
     }
 
     return true;
@@ -491,6 +491,9 @@ bool BNO085_EnableMagnetometer(bno085_t* dev, uint32_t interval_us) {
 }
 bool BNO085_EnableMagnetometerUncal(bno085_t* dev, uint32_t interval_us) {
     return BNO085_SetFeature(dev, SHTP_REPORT_MAGNETIC_FIELD_UNCAL, interval_us);
+}
+bool BNO085_EnableRawMagnetometer(bno085_t* dev, uint32_t interval_us) {
+    return BNO085_SetFeature(dev, SHTP_REPORT_RAW_MAGNETOMETER, interval_us);
 }
 
 bool BNO085_Service(bno085_t* dev, uint8_t* channel_read) {
@@ -548,6 +551,20 @@ bool BNO085_GetMagnetometer(bno085_t* dev, bno085_vec3_t* out) {
     if (!dev->mag.valid) return false;
     *out = dev->mag;
     dev->mag.valid = false;
+    return true;
+}
+
+bool BNO085_GetMagnetometerUncal(bno085_t* dev, bno085_vec3_t* out) {
+    if (!dev->mag_uncal.valid) return false;
+    *out = dev->mag_uncal;
+    dev->mag_uncal.valid = false;
+    return true;
+}
+
+bool BNO085_GetMagnetometerRaw(bno085_t* dev, bno085_vec3_t* out) {
+    if (!dev->mag_raw.valid) return false;
+    *out = dev->mag_raw;
+    dev->mag_raw.valid = false;
     return true;
 }
 

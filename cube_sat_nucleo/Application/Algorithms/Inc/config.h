@@ -62,7 +62,7 @@
 #define MTQ_DIPOLE_TO_AMP     (1.0f / 2.88f) // Datasheet: 2.88 Am^2/A (0.34 Am² @ 3.3V, R=28Ω)
 
 // Hardware sensor logging (USB console demo mode)
-#define SENSOR_LOG_PRINT_PERIOD_MS 100U   // Consolidated sensor line print period
+#define SENSOR_LOG_PRINT_PERIOD_MS 1000U  // Consolidated sensor line print period
 #define SENSOR_SAMPLE_PERIOD_MS    10U    // Async sensor sample service period
 #define ADT7420_I2C_ADDR_7BIT      0x48U  // ADT7420 default address
 #define HARDWARE_TELEPLOT_ENABLE   0U     // 0: off for console-debug clarity, 1: emit >Teleplot lines on hardware mode

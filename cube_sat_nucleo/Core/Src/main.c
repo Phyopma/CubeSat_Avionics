@@ -57,6 +57,7 @@
 
 /* USER CODE BEGIN PV */
 bno085_t imu;
+static uint8_t g_console_rx_byte = 0U;
 
 
 /* USER CODE END PV */
@@ -113,6 +114,7 @@ int main(void)
   static uint8_t boot_banner[] = "UART DMA logger online\r\n";
   (void)HAL_UART_Transmit(&huart2, boot_banner, (uint16_t)(sizeof(boot_banner) - 1U), 20U);
   AppRuntime_Init();
+  (void)HAL_UART_Receive_IT(&huart2, &g_console_rx_byte, 1U);
 
   AppRuntime_Start();
 
@@ -177,6 +179,24 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2)
+  {
+    AppRuntime_OnConsoleByteFromISR(g_console_rx_byte);
+    (void)HAL_UART_Receive_IT(&huart2, &g_console_rx_byte, 1U);
+  }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2)
+  {
+    __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
+    (void)HAL_UART_Receive_IT(&huart2, &g_console_rx_byte, 1U);
+  }
+}
 
 /* USER CODE END 4 */
 
