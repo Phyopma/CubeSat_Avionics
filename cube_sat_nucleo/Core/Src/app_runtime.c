@@ -2,6 +2,7 @@
 
 #include "main.h"
 #include "config.h"
+#include "imu_runtime.h"
 #include "inner_loop_control.h"
 #include "outer_loop_control.h"
 #include "math_lib.h"
@@ -16,189 +17,55 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
-#include "queue.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-#define ADCS_PERIOD_MS 10U // 100Hz outer loop
+#define ADCS_PERIOD_MS 10U
 #define TELEMETRY_PERIOD_MS 50U
 #define CURRENT_SAMPLE_PERIOD_MS SENSOR_SAMPLE_PERIOD_MS
 #define SENSOR_LOG_PERIOD_MS SENSOR_LOG_PRINT_PERIOD_MS
 #define IMU_SERVICE_PERIOD_MS 2U
-#define SIM_PACKET_TIMEOUT_MS 20U
 #define SENSOR_INIT_RETRY_MS 3000U
-#define IMU_REENABLE_PERIOD_MS 1000U
+#define IMU_RECONCILE_PERIOD_MS 100U
+#define IMU_SERVICE_BUDGET 16U
+#define MTQ_FIRING_CURRENT_THRESHOLD_A 0.001f
 
-TaskHandle_t g_adcs_task_handle = NULL; // Exported for UART ISR notification
+TaskHandle_t g_adcs_task_handle = NULL;
 
 extern bno085_t imu;
-
-typedef struct
-{
-    float temp_c;
-    uint8_t temp_valid;
-    bno085_quat_t grv;
-    uint8_t grv_valid;
-    bno085_quat_t quat;
-    uint8_t quat_valid;
-    bno085_vec3_t mag;
-    uint8_t mag_valid;
-    bno085_vec3_t gyro;
-    uint8_t gyro_valid;
-    bno085_vec3_t lin_vel;
-    uint8_t lin_vel_valid;
-} app_sensor_log_cache_t;
 
 static ADT7420_Handle g_temp_sensor;
 static uint8_t g_temp_sensor_ready = 0U;
 static uint8_t g_imu_ready = 0U;
 static uint32_t g_last_temp_init_attempt_ms = 0U;
 static uint32_t g_last_imu_init_attempt_ms = 0U;
-static uint32_t g_last_imu_reenable_ms = 0U;
-static app_sensor_log_cache_t g_sensor_log_cache = {0};
-
-static float AppValueOrZero(uint8_t valid, float value)
-{
-    return (valid != 0U) ? value : 0.0f;
-}
-
-static void AppSensorCache_PollImu(void)
-{
-    bno085_quat_t quat;
-    bno085_quat_t grv;
-    bno085_vec3_t mag;
-    bno085_vec3_t gyro;
-    bno085_vec3_t lin_vel;
-
-    taskENTER_CRITICAL();
-    if (BNO085_GetGameQuaternion(&imu, &grv))
-    {
-        g_sensor_log_cache.grv = grv;
-        g_sensor_log_cache.grv_valid = 1U;
-    }
-    if (BNO085_GetQuaternion(&imu, &quat))
-    {
-        g_sensor_log_cache.quat = quat;
-        g_sensor_log_cache.quat_valid = 1U;
-    }
-    if (BNO085_GetMagnetometer(&imu, &mag))
-    {
-        g_sensor_log_cache.mag = mag;
-        g_sensor_log_cache.mag_valid = 1U;
-    }
-    if (BNO085_GetGyroscope(&imu, &gyro))
-    {
-        g_sensor_log_cache.gyro = gyro;
-        g_sensor_log_cache.gyro_valid = 1U;
-    }
-    if (BNO085_GetLinearAcceleration(&imu, &lin_vel))
-    {
-        g_sensor_log_cache.lin_vel = lin_vel;
-        g_sensor_log_cache.lin_vel_valid = 1U;
-    }
-    taskEXIT_CRITICAL();
-}
-
-static void AppSensorCache_SetTemperature(float temp_c)
-{
-    taskENTER_CRITICAL();
-    g_sensor_log_cache.temp_c = temp_c;
-    g_sensor_log_cache.temp_valid = 1U;
-    taskEXIT_CRITICAL();
-}
-
-static void AppSensorCache_Snapshot(app_sensor_log_cache_t *out)
-{
-    if (out == NULL)
-    {
-        return;
-    }
-    taskENTER_CRITICAL();
-    *out = g_sensor_log_cache;
-    taskEXIT_CRITICAL();
-}
+static uint32_t g_last_imu_reconcile_ms = 0U;
+static imu_report_id_t g_next_reconcile_report = IMU_REPORT_ROTATION_VECTOR;
 
 static void AppRuntime_BootPrint(const char *msg)
 {
-    if (msg == NULL)
-    {
+    if (msg == NULL) {
         return;
     }
-    size_t n = strnlen(msg, 120U);
-    if (n == 0U)
     {
-        return;
+        size_t n = strnlen(msg, 120U);
+        static uint8_t crlf[2] = {'\r', '\n'};
+        if (n == 0U) {
+            return;
+        }
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)n, 20U);
+        (void)HAL_UART_Transmit(&huart2, crlf, 2U, 20U);
     }
-    (void)HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)n, 20U);
-    static uint8_t crlf[2] = {'\r', '\n'};
-    (void)HAL_UART_Transmit(&huart2, crlf, 2U, 20U);
-}
-
-static void AppRuntime_ReenableMissingImuReports(uint32_t now_ms)
-{
-    if ((uint32_t)(now_ms - g_last_imu_reenable_ms) < IMU_REENABLE_PERIOD_MS)
-    {
-        return;
-    }
-
-    uint8_t need_grv = 0U;
-    uint8_t need_q = 0U;
-    uint8_t need_mag = 0U;
-    uint8_t need_gyro = 0U;
-    uint8_t need_lin = 0U;
-    taskENTER_CRITICAL();
-    need_grv = (g_sensor_log_cache.grv_valid == 0U);
-    need_q = (g_sensor_log_cache.quat_valid == 0U);
-    need_mag = (g_sensor_log_cache.mag_valid == 0U);
-    need_gyro = (g_sensor_log_cache.gyro_valid == 0U);
-    need_lin = (g_sensor_log_cache.lin_vel_valid == 0U);
-    taskEXIT_CRITICAL();
-
-    if ((need_grv | need_q | need_mag | need_gyro | need_lin) == 0U)
-    {
-        return;
-    }
-
-    g_last_imu_reenable_ms = now_ms;
-    if (need_q != 0U)
-    {
-        (void)BNO085_EnableRotationVector(&imu, BNO085_REPORT_INTERVAL_US);
-    }
-    if (need_grv != 0U)
-    {
-        (void)BNO085_EnableGameRotationVector(&imu, BNO085_REPORT_INTERVAL_US);
-    }
-    if (need_gyro != 0U)
-    {
-        (void)BNO085_EnableGyroscope(&imu, BNO085_REPORT_INTERVAL_US);
-    }
-    if (need_mag != 0U)
-    {
-        (void)BNO085_EnableMagnetometer(&imu, BNO085_REPORT_INTERVAL_US);
-        (void)BNO085_EnableMagnetometerUncal(&imu, BNO085_REPORT_INTERVAL_US);
-    }
-    if (need_lin != 0U)
-    {
-        (void)BNO085_EnableLinearAccelerometer(&imu, BNO085_REPORT_INTERVAL_US);
-        (void)BNO085_EnableAccelerometer(&imu, BNO085_REPORT_INTERVAL_US);
-        (void)BNO085_EnableGravity(&imu, BNO085_REPORT_INTERVAL_US);
-    }
-
-    log_printf_dma(
-        "BNO085 re-enable missing grv=%u q=%u mag=%u gyro=%u lin=%u",
-        need_grv, need_q, need_mag, need_gyro, need_lin);
 }
 
 static void AppRuntime_FatalStartup(const char *msg)
 {
-    if (msg != NULL)
-    {
+    if (msg != NULL) {
         char line[96];
         int n = snprintf(line, sizeof(line), "FATAL RTOS startup: %s", msg);
-        if (n > 0)
-        {
+        if (n > 0) {
             AppRuntime_BootPrint(line);
         }
         log_printf_dma("FATAL RTOS startup: %s", msg);
@@ -207,7 +74,179 @@ static void AppRuntime_FatalStartup(const char *msg)
     Error_Handler();
 }
 
-/* ---------- Helper steps ---------- */
+static uint32_t AppRuntime_ReportAgeMs(uint32_t now_ms, const imu_report_meta_t *meta)
+{
+    if (meta == NULL || meta->valid == 0U) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)(now_ms - meta->local_timestamp_ms);
+}
+
+static void AppRuntime_CopyQuatSlot(imu_quat_slot_t *dst, bool enabled, const bno085_quat_t *src)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->meta.enabled = enabled ? 1U : 0U;
+    if (src == NULL || src->valid == false) {
+        return;
+    }
+    dst->meta.valid = 1U;
+    dst->meta.status = src->status;
+    dst->meta.accuracy = src->accuracy;
+    dst->meta.local_timestamp_ms = src->local_timestamp_ms;
+    dst->meta.sensor_timestamp_us = src->sensor_timestamp_us;
+    dst->meta.sample_sequence = src->sample_sequence;
+    dst->value.w = src->real;
+    dst->value.x = src->i;
+    dst->value.y = src->j;
+    dst->value.z = src->k;
+    dst->value.accuracy_rad = src->accuracy_rad;
+}
+
+static void AppRuntime_CopyVec3Slot(imu_vec3_slot_t *dst, bool enabled, const bno085_vec3_t *src)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->meta.enabled = enabled ? 1U : 0U;
+    if (src == NULL || src->valid == false) {
+        return;
+    }
+    dst->meta.valid = 1U;
+    dst->meta.status = src->status;
+    dst->meta.accuracy = src->accuracy;
+    dst->meta.local_timestamp_ms = src->local_timestamp_ms;
+    dst->meta.sensor_timestamp_us = src->sensor_timestamp_us;
+    dst->meta.sample_sequence = src->sample_sequence;
+    dst->value.x = src->x;
+    dst->value.y = src->y;
+    dst->value.z = src->z;
+}
+
+static void AppRuntime_CopyRawVec3Slot(imu_raw_vec3_slot_t *dst, bool enabled, const bno085_raw_vec3_t *src)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->meta.enabled = enabled ? 1U : 0U;
+    if (src == NULL || src->valid == false) {
+        return;
+    }
+    dst->meta.valid = 1U;
+    dst->meta.status = src->status;
+    dst->meta.accuracy = src->accuracy;
+    dst->meta.local_timestamp_ms = src->local_timestamp_ms;
+    dst->meta.sensor_timestamp_us = src->sensor_timestamp_us;
+    dst->meta.sample_sequence = src->sample_sequence;
+    dst->value.x = src->x;
+    dst->value.y = src->y;
+    dst->value.z = src->z;
+}
+
+static void AppRuntime_PublishImuSnapshot(uint32_t now_ms)
+{
+    imu_snapshot_t snapshot;
+    imu_request_set_t resolved;
+    bno085_quat_t quat;
+    bno085_quat_t game_quat;
+    bno085_vec3_t gyro;
+    bno085_vec3_t mag_cal;
+    bno085_vec3_t mag_uncal;
+    bno085_raw_vec3_t mag_raw;
+    bno085_vec3_t lin_accel;
+    bno085_vec3_t accel;
+    bno085_vec3_t gravity;
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    snapshot.publish_timestamp_ms = now_ms;
+    IMU_CopyResolvedRequestSet(&resolved);
+
+    memset(&quat, 0, sizeof(quat));
+    memset(&game_quat, 0, sizeof(game_quat));
+    memset(&gyro, 0, sizeof(gyro));
+    memset(&mag_cal, 0, sizeof(mag_cal));
+    memset(&mag_uncal, 0, sizeof(mag_uncal));
+    memset(&mag_raw, 0, sizeof(mag_raw));
+    memset(&lin_accel, 0, sizeof(lin_accel));
+    memset(&accel, 0, sizeof(accel));
+    memset(&gravity, 0, sizeof(gravity));
+
+    (void)BNO085_CopyQuaternion(&imu, &quat);
+    (void)BNO085_CopyGameQuaternion(&imu, &game_quat);
+    (void)BNO085_CopyGyroscope(&imu, &gyro);
+    (void)BNO085_CopyMagnetometerCal(&imu, &mag_cal);
+    (void)BNO085_CopyMagnetometerUncal(&imu, &mag_uncal);
+    (void)BNO085_CopyRawMagnetometer(&imu, &mag_raw);
+    (void)BNO085_CopyLinearAcceleration(&imu, &lin_accel);
+    (void)BNO085_CopyAccelerometer(&imu, &accel);
+    (void)BNO085_CopyGravity(&imu, &gravity);
+
+    AppRuntime_CopyQuatSlot(&snapshot.rotation_vector, resolved.reports[IMU_REPORT_ROTATION_VECTOR].enabled != 0U, &quat);
+    AppRuntime_CopyQuatSlot(&snapshot.game_rotation_vector, resolved.reports[IMU_REPORT_GAME_ROTATION_VECTOR].enabled != 0U, &game_quat);
+    AppRuntime_CopyVec3Slot(&snapshot.gyro, resolved.reports[IMU_REPORT_GYRO].enabled != 0U, &gyro);
+    AppRuntime_CopyVec3Slot(&snapshot.magnetometer_cal, resolved.reports[IMU_REPORT_MAG_CAL].enabled != 0U, &mag_cal);
+    AppRuntime_CopyVec3Slot(&snapshot.magnetometer_uncal, resolved.reports[IMU_REPORT_MAG_UNCAL].enabled != 0U, &mag_uncal);
+    AppRuntime_CopyRawVec3Slot(&snapshot.magnetometer_raw, resolved.reports[IMU_REPORT_MAG_RAW].enabled != 0U, &mag_raw);
+    AppRuntime_CopyVec3Slot(&snapshot.linear_accel, resolved.reports[IMU_REPORT_LINEAR_ACCEL].enabled != 0U, &lin_accel);
+    AppRuntime_CopyVec3Slot(&snapshot.accel, resolved.reports[IMU_REPORT_ACCEL].enabled != 0U, &accel);
+    AppRuntime_CopyVec3Slot(&snapshot.gravity, resolved.reports[IMU_REPORT_GRAVITY].enabled != 0U, &gravity);
+
+    IMU_PublishSnapshot(&snapshot);
+}
+
+static void AppRuntime_UpdateAppliedRequests(void)
+{
+    imu_report_id_t report_id;
+    for (report_id = 0; report_id < IMU_REPORT_COUNT; ++report_id) {
+        bno085_feature_state_t feature_state;
+        if (!BNO085_GetFeatureState(&imu, IMU_ReportToFeatureId(report_id), &feature_state)) {
+            continue;
+        }
+        if (feature_state.acknowledged) {
+            IMU_SetAppliedRequest(report_id, feature_state.enabled, feature_state.interval_us);
+        }
+    }
+}
+
+static void AppRuntime_ReconcileImuRequests(uint32_t now_ms)
+{
+    imu_request_set_t desired;
+    uint32_t attempt;
+
+    if (g_imu_ready == 0U) {
+        return;
+    }
+
+    AppRuntime_UpdateAppliedRequests();
+    if ((uint32_t)(now_ms - g_last_imu_reconcile_ms) < IMU_RECONCILE_PERIOD_MS) {
+        return;
+    }
+
+    IMU_CopyResolvedRequestSet(&desired);
+    for (attempt = 0; attempt < IMU_REPORT_COUNT; ++attempt) {
+        imu_report_id_t report_id = (imu_report_id_t)((g_next_reconcile_report + attempt) % IMU_REPORT_COUNT);
+        imu_request_entry_t desired_entry = desired.reports[report_id];
+        bno085_feature_state_t feature_state;
+        bool desired_enabled;
+
+        (void)BNO085_GetFeatureState(&imu, IMU_ReportToFeatureId(report_id), &feature_state);
+        desired_enabled = (desired_entry.enabled != 0U) && (desired_entry.interval_us != 0U);
+
+        if (feature_state.acknowledged &&
+            feature_state.enabled == desired_enabled &&
+            (desired_enabled == false || feature_state.interval_us == desired_entry.interval_us)) {
+            continue;
+        }
+
+        if (BNO085_ConfigureFeature(&imu,
+                                    IMU_ReportToFeatureId(report_id),
+                                    desired_enabled ? desired_entry.interval_us : 0U)) {
+            log_printf_dma("IMU request %s enabled=%u interval_us=%lu",
+                           IMU_ReportName(report_id),
+                           desired_enabled ? 1U : 0U,
+                           (unsigned long)(desired_enabled ? desired_entry.interval_us : 0U));
+        }
+
+        g_last_imu_reconcile_ms = now_ms;
+        g_next_reconcile_report = (imu_report_id_t)((report_id + 1U) % IMU_REPORT_COUNT);
+        break;
+    }
+}
 
 static void app_control_step(void)
 {
@@ -220,29 +259,19 @@ static void app_sensor_step(void)
     CurrentSensor_RunAsyncSample();
     CurrentSensor_SubmitSampleRequest();
 
-    if (g_temp_sensor_ready == 0U)
-    {
-        if ((uint32_t)(now_ms - g_last_temp_init_attempt_ms) >= SENSOR_INIT_RETRY_MS)
-        {
+    if (g_temp_sensor_ready == 0U) {
+        if ((uint32_t)(now_ms - g_last_temp_init_attempt_ms) >= SENSOR_INIT_RETRY_MS) {
             g_last_temp_init_attempt_ms = now_ms;
             if (HAL_I2C_IsDeviceReady(&hi2c2, (uint16_t)(ADT7420_I2C_ADDR_7BIT << 1), 2U, 20U) == HAL_OK &&
-                ADT7420_Init(&g_temp_sensor, &hi2c2, ADT7420_I2C_ADDR_7BIT) == HAL_OK)
-            {
+                ADT7420_Init(&g_temp_sensor, &hi2c2, ADT7420_I2C_ADDR_7BIT) == HAL_OK) {
                 ADT7420_SubmitSampleRequest();
                 g_temp_sensor_ready = 1U;
                 log_printf_dma("ADT7420 init OK");
             }
         }
-    }
-    else
-    {
-        float temp_c = 0.0f;
+    } else {
         ADT7420_RunAsyncSample(&g_temp_sensor);
         ADT7420_SubmitSampleRequest();
-        if (ADT7420_GetLatestSample(&temp_c, NULL, now_ms) != 0)
-        {
-            AppSensorCache_SetTemperature(temp_c);
-        }
     }
 }
 
@@ -250,8 +279,7 @@ static void app_telemetry_step(void)
 {
 #if HARDWARE_TELEPLOT_ENABLE
     mtq_state_t data;
-    if (!InnerLoop_GetStateSnapshot(&data, 0U))
-    {
+    if (!InnerLoop_GetStateSnapshot(&data, 0U)) {
         return;
     }
     Teleplot_Update("TargetX", data.target_current_x * 1000.0f);
@@ -269,92 +297,161 @@ static void app_telemetry_step(void)
 static void app_imu_step(void)
 {
     uint32_t now_ms = HAL_GetTick();
-    if (g_imu_ready == 0U)
-    {
-        if ((uint32_t)(now_ms - g_last_imu_init_attempt_ms) >= SENSOR_INIT_RETRY_MS)
-        {
+    uint32_t serviced = 0U;
+
+    if (g_imu_ready == 0U) {
+        if ((uint32_t)(now_ms - g_last_imu_init_attempt_ms) >= SENSOR_INIT_RETRY_MS) {
             g_last_imu_init_attempt_ms = now_ms;
-            if (BNO085_Begin(&imu))
-            {
+            if (BNO085_Begin(&imu)) {
                 g_imu_ready = 1U;
                 log_printf_dma("BNO085 init OK");
-            }
-            else
-            {
+                g_last_imu_reconcile_ms = now_ms - IMU_RECONCILE_PERIOD_MS;
+            } else {
                 log_printf_dma("WARN BNO085 init retry failed");
             }
         }
+        return;
     }
-    (void)BNO085_Service(&imu, NULL);
-    AppSensorCache_PollImu();
 
-    if (g_imu_ready == 0U)
-    {
-        uint8_t has_stream = 0U;
-        taskENTER_CRITICAL();
-        if (g_sensor_log_cache.quat_valid || g_sensor_log_cache.grv_valid ||
-            g_sensor_log_cache.mag_valid || g_sensor_log_cache.gyro_valid ||
-            g_sensor_log_cache.lin_vel_valid)
-        {
-            has_stream = 1U;
+    while (serviced < IMU_SERVICE_BUDGET) {
+        if (!BNO085_Service(&imu, NULL)) {
+            break;
         }
-        taskEXIT_CRITICAL();
-        if (has_stream != 0U)
-        {
-            g_imu_ready = 1U;
-            log_printf_dma("BNO085 stream active");
-        }
+        serviced += 1U;
     }
-    AppRuntime_ReenableMissingImuReports(now_ms);
+
+    AppRuntime_ReconcileImuRequests(now_ms);
+    AppRuntime_PublishImuSnapshot(now_ms);
+}
+
+static bool AppRuntime_IsMtqFiring(const mtq_state_t *mtq_state)
+{
+    if (mtq_state == NULL) {
+        return false;
+    }
+    return (fabsf(mtq_state->target_current_x) > MTQ_FIRING_CURRENT_THRESHOLD_A) ||
+           (fabsf(mtq_state->target_current_y) > MTQ_FIRING_CURRENT_THRESHOLD_A) ||
+           (fabsf(mtq_state->target_current_z) > MTQ_FIRING_CURRENT_THRESHOLD_A);
+}
+
+static quat_t AppRuntime_SelectOrientation(const imu_snapshot_t *snapshot, adcs_mode_t mode, bool mtq_firing)
+{
+    quat_t selected = {1.0f, 0.0f, 0.0f, 0.0f};
+    const imu_quat_slot_t *primary = NULL;
+    const imu_quat_slot_t *fallback = NULL;
+
+    if (snapshot == NULL) {
+        return selected;
+    }
+
+    if (mtq_firing) {
+        primary = &snapshot->game_rotation_vector;
+        fallback = &snapshot->rotation_vector;
+    } else if (mode == CTRL_MODE_POINTING) {
+        primary = &snapshot->rotation_vector;
+        fallback = &snapshot->game_rotation_vector;
+    } else {
+        primary = &snapshot->game_rotation_vector;
+        fallback = &snapshot->rotation_vector;
+    }
+
+    if (primary->meta.valid == 0U && fallback->meta.valid != 0U) {
+        primary = fallback;
+    }
+    if (primary->meta.valid == 0U) {
+        return selected;
+    }
+
+    selected.w = primary->value.w;
+    selected.x = primary->value.x;
+    selected.y = primary->value.y;
+    selected.z = primary->value.z;
+    return selected;
+}
+
+static vec3_t AppRuntime_SelectMagneticFieldTesla(const imu_snapshot_t *snapshot, bool mtq_firing)
+{
+    const float microtesla_to_tesla = 1.0e-6f;
+    vec3_t field = {0.0f, 0.0f, 0.0f};
+    const imu_vec3_slot_t *selected = NULL;
+
+    if (snapshot == NULL) {
+        return field;
+    }
+
+    if (mtq_firing && snapshot->magnetometer_uncal.meta.valid != 0U) {
+        selected = &snapshot->magnetometer_uncal;
+    } else if (snapshot->magnetometer_cal.meta.valid != 0U) {
+        selected = &snapshot->magnetometer_cal;
+    } else if (snapshot->magnetometer_uncal.meta.valid != 0U) {
+        selected = &snapshot->magnetometer_uncal;
+    }
+
+    if (selected == NULL) {
+        return field;
+    }
+
+    field.x = selected->value.x * microtesla_to_tesla;
+    field.y = selected->value.y * microtesla_to_tesla;
+    field.z = selected->value.z * microtesla_to_tesla;
+    return field;
+}
+
+static vec3_t AppRuntime_SelectGyro(const imu_snapshot_t *snapshot)
+{
+    vec3_t gyro = {0.0f, 0.0f, 0.0f};
+    if (snapshot == NULL || snapshot->gyro.meta.valid == 0U) {
+        return gyro;
+    }
+    gyro.x = snapshot->gyro.value.x;
+    gyro.y = snapshot->gyro.value.y;
+    gyro.z = snapshot->gyro.value.z;
+    return gyro;
 }
 
 static void app_sensor_console_step(void)
 {
-    app_sensor_log_cache_t sensor;
-    AppSensorCache_Snapshot(&sensor);
+    imu_snapshot_t snapshot;
+    uint32_t now_ms = HAL_GetTick();
+    adcs_mode_t mode = OuterLoop_GetMode();
 
-    if (sensor.grv_valid == 0U || sensor.quat_valid == 0U ||
-        sensor.mag_valid == 0U || sensor.gyro_valid == 0U || sensor.lin_vel_valid == 0U)
-    {
-        log_printf_dma(
-            "SENS waiting valid temp=%u grv=%u q=%u mag=%u gyro=%u lin=%u imu_ready=%u",
-            sensor.temp_valid, sensor.grv_valid, sensor.quat_valid,
-            sensor.mag_valid, sensor.gyro_valid, sensor.lin_vel_valid,
-            g_imu_ready);
+    IMU_ReadSnapshot(&snapshot);
+    if (snapshot.publish_sequence == 0U) {
+        log_printf_dma("IMU waiting snapshot=0 mode=%u imu_ready=%u", mode, g_imu_ready);
         return;
     }
 
     log_printf_dma(
-        "SENS temp=%.2fC GRV[wxyz]=(%.4f,%.4f,%.4f,%.4f) Q[wxyz]=(%.4f,%.4f,%.4f,%.4f) MAG[uT]=(%.2f,%.2f,%.2f) GYRO[rad/s]=(%.4f,%.4f,%.4f) LIN[m/s2]=(%.4f,%.4f,%.4f) valid[temp=%u]",
-        AppValueOrZero(sensor.temp_valid, sensor.temp_c),
-        AppValueOrZero(sensor.grv_valid, sensor.grv.real), AppValueOrZero(sensor.grv_valid, sensor.grv.i),
-        AppValueOrZero(sensor.grv_valid, sensor.grv.j), AppValueOrZero(sensor.grv_valid, sensor.grv.k),
-        AppValueOrZero(sensor.quat_valid, sensor.quat.real), AppValueOrZero(sensor.quat_valid, sensor.quat.i),
-        AppValueOrZero(sensor.quat_valid, sensor.quat.j), AppValueOrZero(sensor.quat_valid, sensor.quat.k),
-        AppValueOrZero(sensor.mag_valid, sensor.mag.x), AppValueOrZero(sensor.mag_valid, sensor.mag.y),
-        AppValueOrZero(sensor.mag_valid, sensor.mag.z),
-        AppValueOrZero(sensor.gyro_valid, sensor.gyro.x), AppValueOrZero(sensor.gyro_valid, sensor.gyro.y),
-        AppValueOrZero(sensor.gyro_valid, sensor.gyro.z),
-        AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.x), AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.y),
-        AppValueOrZero(sensor.lin_vel_valid, sensor.lin_vel.z),
-        sensor.temp_valid);
+        "IMU seq=%lu mode=%u gyro[v/e]=%u/%u (%.4f,%.4f,%.4f) mag[v/e]=%u/%u (%.2f,%.2f,%.2f) "
+        "uncal[v/e]=%u/%u (%.2f,%.2f,%.2f) raw[v/e]=%u/%u (%d,%d,%d) rv[v/e]=%u/%u w=%.4f grv[v/e]=%u/%u w=%.4f "
+        "age_ms[gyro=%lu mag=%lu raw=%lu]",
+        (unsigned long)snapshot.publish_sequence,
+        mode,
+        snapshot.gyro.meta.valid, snapshot.gyro.meta.enabled,
+        snapshot.gyro.value.x, snapshot.gyro.value.y, snapshot.gyro.value.z,
+        snapshot.magnetometer_cal.meta.valid, snapshot.magnetometer_cal.meta.enabled,
+        snapshot.magnetometer_cal.value.x, snapshot.magnetometer_cal.value.y, snapshot.magnetometer_cal.value.z,
+        snapshot.magnetometer_uncal.meta.valid, snapshot.magnetometer_uncal.meta.enabled,
+        snapshot.magnetometer_uncal.value.x, snapshot.magnetometer_uncal.value.y, snapshot.magnetometer_uncal.value.z,
+        snapshot.magnetometer_raw.meta.valid, snapshot.magnetometer_raw.meta.enabled,
+        snapshot.magnetometer_raw.value.x, snapshot.magnetometer_raw.value.y, snapshot.magnetometer_raw.value.z,
+        snapshot.rotation_vector.meta.valid, snapshot.rotation_vector.meta.enabled, snapshot.rotation_vector.value.w,
+        snapshot.game_rotation_vector.meta.valid, snapshot.game_rotation_vector.meta.enabled, snapshot.game_rotation_vector.value.w,
+        (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.gyro.meta),
+        (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.magnetometer_cal.meta),
+        (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.magnetometer_raw.meta));
 }
-
-/* ---------- ISR entry point ---------- */
 
 void AppRuntime_OnControlTickFromISR(void)
 {
     app_control_step();
 }
 
-/* ---------- FreeRTOS Tasks ---------- */
-
 static void CurrentSensorTask(void *argument)
 {
-    (void)argument;
     TickType_t next_wake = xTaskGetTickCount();
-    for (;;)
-    {
+    (void)argument;
+    for (;;) {
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
         app_sensor_step();
     }
@@ -362,10 +459,9 @@ static void CurrentSensorTask(void *argument)
 
 static void ImuTask(void *argument)
 {
-    (void)argument;
     TickType_t next_wake = xTaskGetTickCount();
-    for (;;)
-    {
+    (void)argument;
+    for (;;) {
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(IMU_SERVICE_PERIOD_MS));
         app_imu_step();
     }
@@ -373,18 +469,15 @@ static void ImuTask(void *argument)
 
 static void TelemetryTask(void *argument)
 {
-    (void)argument;
     TickType_t next_wake = xTaskGetTickCount();
     uint32_t last_sensor_log_ms = 0U;
-    for (;;)
-    {
+    (void)argument;
+    for (;;) {
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
         app_telemetry_step();
-        uint32_t now_ms = HAL_GetTick();
-        if ((uint32_t)(now_ms - last_sensor_log_ms) >= SENSOR_LOG_PERIOD_MS)
-        {
+        if ((uint32_t)(HAL_GetTick() - last_sensor_log_ms) >= SENSOR_LOG_PERIOD_MS) {
             app_sensor_console_step();
-            last_sensor_log_ms = now_ms;
+            last_sensor_log_ms = HAL_GetTick();
         }
     }
 }
@@ -392,64 +485,48 @@ static void TelemetryTask(void *argument)
 static void LoggerTask(void *argument)
 {
     (void)argument;
-    for (;;)
-    {
+    for (;;) {
         serial_log_process_tx();
         vTaskDelay(pdMS_TO_TICKS(1U));
     }
 }
 
-/* ---------- ADCS Task ---------- */
-
-static float ClampF_RT(float x, float lo, float hi)
-{
-    if (x < lo)
-        return lo;
-    if (x > hi)
-        return hi;
-    return x;
-}
-
 static void ADCSTask(void *argument)
 {
-    (void)argument;
-
-    // Runtime state for dynamic gain tracking
-    static float last_kbdot = -1.0f, last_kp = -1.0f, last_ki = -1.0f, last_kd = -1.0f;
-    static float last_c_damp = -1.0f, last_i_virtual = -1.0f;
-    static uint8_t last_force_mode = 0xFF;
-    static uint8_t last_reset_request = 0;
-
+    static float dt_s = 0.01f;
     adcs_sensor_input_t adcs_in;
     adcs_output_t adcs_out;
-
     TickType_t next_wake = xTaskGetTickCount();
-    for (;;)
-    {
-        // In hardware mode, run at fixed 100Hz rate
+    (void)argument;
+
+    for (;;) {
+        imu_snapshot_t snapshot;
+        imu_request_set_t control_request;
+        mtq_state_t mtq_state;
+        adcs_mode_t mode;
+        bool mtq_firing = false;
+
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(ADCS_PERIOD_MS));
 
-        // 1. Prepare ADCS Input
-        // TODO: Read from physical sensors (BNO085)
-        // For now, zero input (sensors handled by ImuTask)
-        adcs_in.mag_field = (vec3_t){0.0f, 0.0f, 0.0f};
-        adcs_in.gyro = (vec3_t){0.0f, 0.0f, 0.0f};
-        adcs_in.orientation = (quat_t){1.0f, 0.0f, 0.0f, 0.0f};
+        IMU_ReadSnapshot(&snapshot);
+        (void)memset(&mtq_state, 0, sizeof(mtq_state));
+        (void)InnerLoop_GetStateSnapshot(&mtq_state, 0U);
+        mtq_firing = AppRuntime_IsMtqFiring(&mtq_state);
+        mode = OuterLoop_GetMode();
 
-        // 2. Run ADCS Algorithms
-        OuterLoop_Update(&adcs_in, &adcs_out, 0.01f); // 100Hz
+        IMU_BuildControlRequestSet(mode, mtq_firing, &control_request);
+        IMU_RequestSet(IMU_CLIENT_CONTROL, &control_request);
 
-        // 3. Command the Inner Loop
-        float mtq_dipole_to_amp = MTQ_DIPOLE_TO_AMP;
-        float target_x = adcs_out.dipole_request.x * mtq_dipole_to_amp;
-        float target_y = adcs_out.dipole_request.y * mtq_dipole_to_amp;
-        float target_z = adcs_out.dipole_request.z * mtq_dipole_to_amp;
+        adcs_in.mag_field = AppRuntime_SelectMagneticFieldTesla(&snapshot, mtq_firing);
+        adcs_in.gyro = AppRuntime_SelectGyro(&snapshot);
+        adcs_in.orientation = AppRuntime_SelectOrientation(&snapshot, mode, mtq_firing);
 
-        InnerLoop_SetTargetCurrent(target_x, target_y, target_z);
+        OuterLoop_Update(&adcs_in, &adcs_out, dt_s);
+        InnerLoop_SetTargetCurrent(adcs_out.dipole_request.x * MTQ_DIPOLE_TO_AMP,
+                                   adcs_out.dipole_request.y * MTQ_DIPOLE_TO_AMP,
+                                   adcs_out.dipole_request.z * MTQ_DIPOLE_TO_AMP);
     }
 }
-
-/* ---------- Init / Start / RunOnce ---------- */
 
 void AppRuntime_Init(void)
 {
@@ -460,49 +537,48 @@ void AppRuntime_Init(void)
     AppRuntime_BootPrint("BOOT OuterLoop_Init done");
     InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
     CurrentSensor_SubmitSampleRequest();
+
+    IMU_Init();
+    IMU_RequestProfile(IMU_CLIENT_COMMS, IMU_PROFILE_TELEMETRY_BASIC);
+    IMU_RequestProfile(IMU_CLIENT_CONTROL, IMU_PROFILE_CTRL_DETUMBLE);
+
     g_imu_ready = 0U;
     g_temp_sensor_ready = 0U;
     g_last_imu_init_attempt_ms = HAL_GetTick() - SENSOR_INIT_RETRY_MS;
     g_last_temp_init_attempt_ms = HAL_GetTick() - SENSOR_INIT_RETRY_MS;
-    g_last_imu_reenable_ms = 0U;
+    g_last_imu_reconcile_ms = 0U;
+    g_next_reconcile_report = IMU_REPORT_ROTATION_VECTOR;
+
     log_printf_dma("AppRuntime init complete (deferred sensor init)");
     AppRuntime_BootPrint("BOOT AppRuntime_Init done");
 }
 
 void AppRuntime_Start(void)
 {
-    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
-    {
+    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
         AppRuntime_FatalStartup("HAL_TIM_Base_Start_IT(TIM6)");
     }
-    if (xTaskCreate(ADCSTask, "ADCSTask", 1024U, NULL, 4U, &g_adcs_task_handle) != pdPASS)
-    {
+    if (xTaskCreate(ADCSTask, "ADCSTask", 1024U, NULL, 4U, &g_adcs_task_handle) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(ADCSTask)");
     }
-    if (xTaskCreate(CurrentSensorTask, "CurrentTask", 384U, NULL, 4U, NULL) != pdPASS)
-    {
+    if (xTaskCreate(CurrentSensorTask, "CurrentTask", 384U, NULL, 4U, NULL) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(CurrentTask)");
     }
-    if (xTaskCreate(ImuTask, "ImuTask", 768U, NULL, 4U, NULL) != pdPASS)
-    {
+    if (xTaskCreate(ImuTask, "ImuTask", 896U, NULL, 4U, NULL) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(ImuTask)");
     }
-    if (xTaskCreate(TelemetryTask, "TelemetryTask", 512U, NULL, 3U, NULL) != pdPASS)
-    {
+    if (xTaskCreate(TelemetryTask, "TelemetryTask", 768U, NULL, 3U, NULL) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(TelemetryTask)");
     }
-    if (xTaskCreate(LoggerTask, "LoggerTask", 512U, NULL, 2U, NULL) != pdPASS)
-    {
+    if (xTaskCreate(LoggerTask, "LoggerTask", 512U, NULL, 2U, NULL) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(LoggerTask)");
     }
+
     vTaskStartScheduler();
     AppRuntime_FatalStartup("vTaskStartScheduler returned");
 }
 
 void AppRuntime_RunOnce(void)
 {
-    // After vTaskStartScheduler(), the RTOS runs all tasks.
-    // This is only reached if scheduler hasn't started or returned (shouldn't happen).
-    // Fallback: pump serial log.
     serial_log_process_tx();
 }
