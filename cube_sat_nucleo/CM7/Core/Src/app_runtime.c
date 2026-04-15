@@ -58,15 +58,6 @@ static void app_control_step(void)
     InnerLoop_Update();
 }
 
-static void app_sensor_step(void)
-{
-    uint32_t now_ms = HAL_GetTick();
-    CurrentSensor_ProcessSample();
-    CurrentSensor_SubmitSampleRequest();
-
-    (void)now_ms;
-}
-
 static void app_telemetry_step(void)
 {
 
@@ -96,7 +87,8 @@ static void CurrentSensorTask(void *argument)
     for (;;)
     {
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
-        app_sensor_step();
+        CurrentSensor_ProcessSample();			// will process any current i2c requests
+        CurrentSensor_SubmitSampleRequest();	// will generate a new i2c request. Callback will return data async
     }
 }
 
