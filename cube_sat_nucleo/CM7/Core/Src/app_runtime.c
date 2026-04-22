@@ -87,8 +87,12 @@ static void CurrentSensorTask(void *argument)
     for (;;)
     {
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
-        CurrentSensor_ProcessSample();			// will process any current i2c requests
-        CurrentSensor_SubmitSampleRequest();	// will generate a new i2c request. Callback will return data async
+        /* The code below will first process any currently active i2c current sensor related requests.
+         * Once the i2c line is clear, a new request will be activated and data will be returned later
+         * by the callback function.
+         */
+        CurrentSensor_ProcessSample();
+        CurrentSensor_SubmitSampleRequest();
     }
 }
 
