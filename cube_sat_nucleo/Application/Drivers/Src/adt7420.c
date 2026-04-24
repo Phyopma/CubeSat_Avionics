@@ -5,6 +5,7 @@
 typedef struct {
     volatile uint8_t request_pending;
     volatile uint8_t sample_valid;
+    volatile uint8_t latest_status;
     volatile uint32_t last_sample_tick_ms;
     volatile float latest_temp_c;
 } adt7420_async_state_t;
@@ -68,6 +69,7 @@ HAL_StatusTypeDef ADT7420_Init(ADT7420_Handle *h, I2C_HandleTypeDef *hi2c, uint8
     HAL_Delay(250);
     g_async_state.request_pending = 0U;
     g_async_state.sample_valid = 0U;
+    g_async_state.latest_status = 0U;
     g_async_state.last_sample_tick_ms = 0U;
     g_async_state.latest_temp_c = 0.0f;
     return HAL_OK;
@@ -85,8 +87,11 @@ void ADT7420_RunAsyncSample(ADT7420_Handle *h)
     }
     g_async_state.request_pending = 0U;
     float temp_c = 0.0f;
+    uint8_t status = 0U;
     if (ADT7420_ReadCelsius(h, &temp_c) == HAL_OK) {
+        (void)rd_u8(h, ADT7420_REG_STATUS, &status);
         g_async_state.latest_temp_c = temp_c;
+        g_async_state.latest_status = status;
         g_async_state.last_sample_tick_ms = HAL_GetTick();
         g_async_state.sample_valid = 1U;
     }
@@ -99,6 +104,23 @@ int ADT7420_GetLatestSample(float *temp_c, uint32_t *age_ms, uint32_t now_ms)
     }
     if (temp_c != NULL) {
         *temp_c = g_async_state.latest_temp_c;
+    }
+    if (age_ms != NULL) {
+        *age_ms = now_ms - g_async_state.last_sample_tick_ms;
+    }
+    return 1;
+}
+
+int ADT7420_GetLatestSampleWithStatus(float *temp_c, uint8_t *status, uint32_t *age_ms, uint32_t now_ms)
+{
+    if (g_async_state.sample_valid == 0U) {
+        return 0;
+    }
+    if (temp_c != NULL) {
+        *temp_c = g_async_state.latest_temp_c;
+    }
+    if (status != NULL) {
+        *status = g_async_state.latest_status;
     }
     if (age_ms != NULL) {
         *age_ms = now_ms - g_async_state.last_sample_tick_ms;

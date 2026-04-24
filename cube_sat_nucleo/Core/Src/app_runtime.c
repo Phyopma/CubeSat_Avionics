@@ -3,6 +3,7 @@
 #include "main.h"
 #include "config.h"
 #include "imu_runtime.h"
+#include "power_runtime.h"
 #include "inner_loop_control.h"
 #include "outer_loop_control.h"
 #include "math_lib.h"
@@ -24,7 +25,7 @@
 
 #define ADCS_PERIOD_MS 10U
 #define TELEMETRY_PERIOD_MS 50U
-#define CURRENT_SAMPLE_PERIOD_MS SENSOR_SAMPLE_PERIOD_MS
+#define POWER_SAMPLE_PERIOD_MS SENSOR_SAMPLE_PERIOD_MS
 #define SENSOR_LOG_PERIOD_MS SENSOR_LOG_PRINT_PERIOD_MS
 #define IMU_SERVICE_PERIOD_MS 2U
 #define SENSOR_INIT_RETRY_MS 3000U
@@ -43,6 +44,9 @@ static uint32_t g_last_temp_init_attempt_ms = 0U;
 static uint32_t g_last_imu_init_attempt_ms = 0U;
 static uint32_t g_last_imu_reconcile_ms = 0U;
 static imu_report_id_t g_next_reconcile_report = IMU_REPORT_ROTATION_VECTOR;
+static float g_power_avg_current_mA = 0.0f;
+static float g_power_avg_voltage_mV = 0.0f;
+static uint8_t g_power_avg_valid = 0U;
 
 static void AppRuntime_BootPrint(const char *msg)
 {
@@ -80,6 +84,33 @@ static uint32_t AppRuntime_ReportAgeMs(uint32_t now_ms, const imu_report_meta_t 
         return UINT32_MAX;
     }
     return (uint32_t)(now_ms - meta->local_timestamp_ms);
+}
+
+static int16_t AppRuntime_ClampInt16(int32_t value)
+{
+    if (value > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (value < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)value;
+}
+
+static uint16_t AppRuntime_ClampUInt16(int32_t value)
+{
+    if (value > UINT16_MAX) {
+        return UINT16_MAX;
+    }
+    if (value < 0) {
+        return 0U;
+    }
+    return (uint16_t)value;
+}
+
+static int32_t AppRuntime_RoundToInt32(float value)
+{
+    return (int32_t)((value >= 0.0f) ? (value + 0.5f) : (value - 0.5f));
 }
 
 static void AppRuntime_CopyQuatSlot(imu_quat_slot_t *dst, bool enabled, const bno085_quat_t *src)
@@ -256,6 +287,14 @@ static void app_control_step(void)
 static void app_sensor_step(void)
 {
     uint32_t now_ms = HAL_GetTick();
+    power_snapshot_t power_snapshot;
+    float current_amps = 0.0f;
+    float bus_voltage_volts = 0.0f;
+    float temp_c = 0.0f;
+    uint8_t temp_status = 0U;
+    uint32_t current_age_ms = UINT32_MAX;
+    uint32_t temp_age_ms = UINT32_MAX;
+
     CurrentSensor_RunAsyncSample();
     CurrentSensor_SubmitSampleRequest();
 
@@ -273,12 +312,50 @@ static void app_sensor_step(void)
         ADT7420_RunAsyncSample(&g_temp_sensor);
         ADT7420_SubmitSampleRequest();
     }
+
+    (void)memset(&power_snapshot, 0, sizeof(power_snapshot));
+    power_snapshot.publish_timestamp_ms = now_ms;
+    power_snapshot.source_age_ms = UINT32_MAX;
+
+    if (CurrentSensor_GetLatestPowerSample(&current_amps, &bus_voltage_volts, &current_age_ms, now_ms) != 0) {
+        float current_mA = current_amps * 1000.0f;
+        float voltage_mV = bus_voltage_volts * 1000.0f;
+        if (g_power_avg_valid == 0U) {
+            g_power_avg_current_mA = current_mA;
+            g_power_avg_voltage_mV = voltage_mV;
+            g_power_avg_valid = 1U;
+        } else {
+            g_power_avg_current_mA = (g_power_avg_current_mA * 0.90f) + (current_mA * 0.10f);
+            g_power_avg_voltage_mV = (g_power_avg_voltage_mV * 0.90f) + (voltage_mV * 0.10f);
+        }
+        power_snapshot.battery.current_mA = AppRuntime_ClampInt16(AppRuntime_RoundToInt32(current_mA));
+        power_snapshot.battery.average_current_mA = AppRuntime_ClampInt16(AppRuntime_RoundToInt32(g_power_avg_current_mA));
+        power_snapshot.battery.voltage_mV = AppRuntime_ClampUInt16(AppRuntime_RoundToInt32(voltage_mV));
+        power_snapshot.battery.average_voltage_mV = AppRuntime_ClampUInt16(AppRuntime_RoundToInt32(g_power_avg_voltage_mV));
+        power_snapshot.battery.valid_mask |= POWER_BATTERY_VALID_CURRENT |
+                                             POWER_BATTERY_VALID_AVERAGE_CURRENT |
+                                             POWER_BATTERY_VALID_VOLTAGE |
+                                             POWER_BATTERY_VALID_AVERAGE_VOLTAGE;
+        power_snapshot.source_age_ms = current_age_ms;
+    }
+
+    if (ADT7420_GetLatestSampleWithStatus(&temp_c, &temp_status, &temp_age_ms, now_ms) != 0) {
+        power_snapshot.digital_temp.temperature_cC = AppRuntime_ClampInt16(AppRuntime_RoundToInt32(temp_c * 100.0f));
+        power_snapshot.digital_temp.status = temp_status;
+        power_snapshot.digital_temp.valid_mask |= POWER_DIGITAL_TEMP_VALID_TEMPERATURE | POWER_DIGITAL_TEMP_VALID_STATUS;
+        if (temp_age_ms < power_snapshot.source_age_ms) {
+            power_snapshot.source_age_ms = temp_age_ms;
+        }
+    }
+
+    Power_PublishSnapshot(&power_snapshot);
 }
 
 static void app_telemetry_step(void)
 {
 #if HARDWARE_TELEPLOT_ENABLE
     mtq_state_t data;
+    power_snapshot_t power;
     if (!InnerLoop_GetStateSnapshot(&data, 0U)) {
         return;
     }
@@ -291,6 +368,16 @@ static void app_telemetry_step(void)
     Teleplot_Update("VoltX", data.command_voltage_x);
     Teleplot_Update("VoltY", data.command_voltage_y);
     Teleplot_Update("VoltZ", data.command_voltage_z);
+    Power_ReadSnapshot(&power);
+    if ((power.battery.valid_mask & POWER_BATTERY_VALID_CURRENT) != 0U) {
+        Teleplot_Update("Ibat", (float)power.battery.current_mA);
+    }
+    if ((power.battery.valid_mask & POWER_BATTERY_VALID_VOLTAGE) != 0U) {
+        Teleplot_Update("Vbat", (float)power.battery.voltage_mV);
+    }
+    if ((power.digital_temp.valid_mask & POWER_DIGITAL_TEMP_VALID_TEMPERATURE) != 0U) {
+        Teleplot_Update("TempC", (float)power.digital_temp.temperature_cC * 0.01f);
+    }
 #endif
 }
 
@@ -412,6 +499,7 @@ static vec3_t AppRuntime_SelectGyro(const imu_snapshot_t *snapshot)
 static void app_sensor_console_step(void)
 {
     imu_snapshot_t snapshot;
+    power_snapshot_t power;
     uint32_t now_ms = HAL_GetTick();
     adcs_mode_t mode = OuterLoop_GetMode();
 
@@ -440,6 +528,20 @@ static void app_sensor_console_step(void)
         (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.gyro.meta),
         (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.magnetometer_cal.meta),
         (unsigned long)AppRuntime_ReportAgeMs(now_ms, &snapshot.magnetometer_raw.meta));
+
+    Power_ReadSnapshot(&power);
+    log_printf_dma(
+        "PWR seq=%lu batt_valid=0x%08lX I=%dmA Iavg=%dmA V=%umV Vavg=%umV temp_valid=0x%02X temp_cC=%d status=0x%02X age_ms=%lu",
+        (unsigned long)power.publish_sequence,
+        (unsigned long)power.battery.valid_mask,
+        (int)power.battery.current_mA,
+        (int)power.battery.average_current_mA,
+        (unsigned int)power.battery.voltage_mV,
+        (unsigned int)power.battery.average_voltage_mV,
+        (unsigned int)power.digital_temp.valid_mask,
+        (int)power.digital_temp.temperature_cC,
+        (unsigned int)power.digital_temp.status,
+        (unsigned long)power.source_age_ms);
 }
 
 void AppRuntime_OnControlTickFromISR(void)
@@ -447,12 +549,12 @@ void AppRuntime_OnControlTickFromISR(void)
     app_control_step();
 }
 
-static void CurrentSensorTask(void *argument)
+static void PowerDataTask(void *argument)
 {
     TickType_t next_wake = xTaskGetTickCount();
     (void)argument;
     for (;;) {
-        vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(CURRENT_SAMPLE_PERIOD_MS));
+        vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(POWER_SAMPLE_PERIOD_MS));
         app_sensor_step();
     }
 }
@@ -536,9 +638,11 @@ void AppRuntime_Init(void)
     OuterLoop_Init();
     AppRuntime_BootPrint("BOOT OuterLoop_Init done");
     InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
+    CurrentSensor_Init();
     CurrentSensor_SubmitSampleRequest();
 
     IMU_Init();
+    Power_Init();
     IMU_RequestProfile(IMU_CLIENT_COMMS, IMU_PROFILE_TELEMETRY_BASIC);
     IMU_RequestProfile(IMU_CLIENT_CONTROL, IMU_PROFILE_CTRL_DETUMBLE);
 
@@ -548,6 +652,9 @@ void AppRuntime_Init(void)
     g_last_temp_init_attempt_ms = HAL_GetTick() - SENSOR_INIT_RETRY_MS;
     g_last_imu_reconcile_ms = 0U;
     g_next_reconcile_report = IMU_REPORT_ROTATION_VECTOR;
+    g_power_avg_current_mA = 0.0f;
+    g_power_avg_voltage_mV = 0.0f;
+    g_power_avg_valid = 0U;
 
     log_printf_dma("AppRuntime init complete (deferred sensor init)");
     AppRuntime_BootPrint("BOOT AppRuntime_Init done");
@@ -561,8 +668,8 @@ void AppRuntime_Start(void)
     if (xTaskCreate(ADCSTask, "ADCSTask", 1024U, NULL, 4U, &g_adcs_task_handle) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(ADCSTask)");
     }
-    if (xTaskCreate(CurrentSensorTask, "CurrentTask", 384U, NULL, 4U, NULL) != pdPASS) {
-        AppRuntime_FatalStartup("xTaskCreate(CurrentTask)");
+    if (xTaskCreate(PowerDataTask, "PowerDataTask", 512U, NULL, 4U, NULL) != pdPASS) {
+        AppRuntime_FatalStartup("xTaskCreate(PowerDataTask)");
     }
     if (xTaskCreate(ImuTask, "ImuTask", 896U, NULL, 4U, NULL) != pdPASS) {
         AppRuntime_FatalStartup("xTaskCreate(ImuTask)");

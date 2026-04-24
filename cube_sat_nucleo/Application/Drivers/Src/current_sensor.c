@@ -5,6 +5,7 @@ typedef struct {
     volatile uint8_t sample_valid;
     volatile uint32_t last_sample_tick_ms;
     volatile float latest_current_amps;
+    volatile float latest_bus_voltage_volts;
 } current_sensor_async_state_t;
 
 static current_sensor_async_state_t g_async_state = {0};
@@ -52,6 +53,7 @@ void CurrentSensor_Init(void)
     g_async_state.sample_valid = 0U;
     g_async_state.last_sample_tick_ms = 0U;
     g_async_state.latest_current_amps = 0.0f;
+    g_async_state.latest_bus_voltage_volts = 0.0f;
 }
 
 float CurrentSensor_Read_Amps(void)
@@ -63,6 +65,13 @@ float CurrentSensor_Read_Amps(void)
 	// LSB = 0.1mA -> divide by 10 to get mA, divide by 10000 to get Amps
 	// simpler: raw * 0.0001
 	return (float)raw * 0.0001f;
+}
+
+float CurrentSensor_Read_BusVoltageVolts(void)
+{
+    uint16_t raw = read_reg(REG_BUS_VOLT);
+    uint16_t bus_voltage_raw = (uint16_t)((raw >> 3) & 0x1FFFU);
+    return (float)bus_voltage_raw * 0.004f;
 }
 
 void CurrentSensor_SubmitSampleRequest(void)
@@ -77,6 +86,7 @@ void CurrentSensor_RunAsyncSample(void)
     }
     g_async_state.request_pending = 0U;
     g_async_state.latest_current_amps = CurrentSensor_Read_Amps();
+    g_async_state.latest_bus_voltage_volts = CurrentSensor_Read_BusVoltageVolts();
     g_async_state.last_sample_tick_ms = HAL_GetTick();
     g_async_state.sample_valid = 1U;
 }
@@ -88,6 +98,23 @@ int CurrentSensor_GetLatestSample(float *amps, uint32_t *age_ms, uint32_t now_ms
     }
     if (amps != NULL) {
         *amps = g_async_state.latest_current_amps;
+    }
+    if (age_ms != NULL) {
+        *age_ms = now_ms - g_async_state.last_sample_tick_ms;
+    }
+    return 1;
+}
+
+int CurrentSensor_GetLatestPowerSample(float *amps, float *bus_voltage_volts, uint32_t *age_ms, uint32_t now_ms)
+{
+    if (g_async_state.sample_valid == 0U) {
+        return 0;
+    }
+    if (amps != NULL) {
+        *amps = g_async_state.latest_current_amps;
+    }
+    if (bus_voltage_volts != NULL) {
+        *bus_voltage_volts = g_async_state.latest_bus_voltage_volts;
     }
     if (age_ms != NULL) {
         *age_ms = now_ms - g_async_state.last_sample_tick_ms;
