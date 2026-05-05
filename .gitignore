@@ -68,6 +68,9 @@ stm32cubemx/
 # debug information files
 *.dwo
 
+__pycache__/
+*/__pycache__/
+*.py[cod]
 
 # CubeIDE/Build residues
 Release/
@@ -79,3 +82,5 @@ build/
 .agent
 .DS_Store
 COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilizati.pdf
+
+docs/data_sheets/

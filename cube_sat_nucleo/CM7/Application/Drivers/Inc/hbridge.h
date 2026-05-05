@@ -4,6 +4,7 @@
 
 #include "stm32h7xx_hal.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 // --- Function Prototypes ---
 

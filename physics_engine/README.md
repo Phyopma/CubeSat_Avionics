@@ -1,15 +1,22 @@
 # Physics Engine — HITL Simulation Host
 
 Python-based physics engine for Hardware-in-the-Loop simulation of the CubeSat ADCS. Communicates with STM32 firmware over binary UART protocol.
+Python-based physics engine for Hardware-in-the-Loop simulation of the CubeSat ADCS. Communicates with STM32 firmware over binary UART protocol.
 
 ## Prerequisites
 
 - [uv](https://github.com/astral-sh/uv) for dependency management
 - Python 3.10+
 - STM32 Nucleo-L476RG connected via USB
+- [uv](https://github.com/astral-sh/uv) for dependency management
+- Python 3.10+
+- STM32 Nucleo-L476RG connected via USB
 
 ## Setup
 
+```bash
+uv sync
+```
 ```bash
 uv sync
 ```
@@ -32,7 +39,28 @@ uv run simulation_host.py --scenario detumble --force-mode detumble
 ```
 
 ### Pointing Scenario
+### Detumble Scenario
 ```bash
+# Default: high initial tumble → firmware reduces angular velocity
+uv run simulation_host.py --scenario detumble --initial_omega 1.0 1.0 1.0
+
+# With debug output (prints ω, B-field, dipole moment)
+uv run simulation_host.py --scenario detumble --debug
+
+# With custom gains
+uv run simulation_host.py --scenario detumble --kbdot 500000.0
+
+# Force a specific STM32 outer-loop mode (bypass state machine)
+uv run simulation_host.py --scenario detumble --force-mode detumble
+```
+
+### Pointing Scenario
+```bash
+# 180° flip recovery test (starts anti-parallel to target)
+uv run simulation_host.py --scenario pointing --initial_omega 0.05 0.05 0.05
+
+# Custom PID gains
+uv run simulation_host.py --scenario pointing --kp 0.2 --kd 0.15
 # 180° flip recovery test (starts anti-parallel to target)
 uv run simulation_host.py --scenario pointing --initial_omega 0.05 0.05 0.05
 
@@ -40,6 +68,7 @@ uv run simulation_host.py --scenario pointing --initial_omega 0.05 0.05 0.05
 uv run simulation_host.py --scenario pointing --kp 0.2 --kd 0.15
 ```
 
+### Timing Options
 ### Timing Options
 ```bash
 # Fast mode (default): 0.1s steps, ~10 min per orbit
@@ -50,8 +79,17 @@ uv run simulation_host.py --scenario detumble --realtime
 
 # Custom step size
 uv run simulation_host.py --scenario detumble --dt 0.05
+# Fast mode (default): 0.1s steps, ~10 min per orbit
+uv run simulation_host.py --scenario detumble
+
+# Realtime: 1.0s steps, 90 min per orbit
+uv run simulation_host.py --scenario detumble --realtime
+
+# Custom step size
+uv run simulation_host.py --scenario detumble --dt 0.05
 ```
 
+### Other Flags
 ### Other Flags
 ```bash
 # Open loop (bypass PI controller: V = I·R)

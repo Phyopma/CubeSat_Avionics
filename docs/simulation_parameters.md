@@ -4,17 +4,21 @@ Reference for all tunable parameters in the HITL simulation. Parameters can be a
 
 ## 1. Satellite Mass Properties
 
-**File:** `physics_engine/physics.py` → `SatellitePhysics.__init__`
+**Source file:** `physics_engine/config/structural_constants_w26.json`  
+**Loader:** `physics_engine/constants_loader.py`  
+**Consumer:** `physics_engine/physics.py` → `SatellitePhysics.__init__`
 
 | Parameter | Value | Unit | Description |
 |---|---|---|---|
-| `I_xx` | 0.00833 | kg·m² | Moment of inertia (X-axis, 2U long axis) |
-| `I_yy` | 0.00833 | kg·m² | Moment of inertia (Y-axis) |
-| `I_zz` | 0.00333 | kg·m² | Moment of inertia (Z-axis, 2U short axis) |
+| `Px` | 0.01186725757 | kg·m² | Principal moment X (converted from g·mm²) |
+| `Py` | 0.01257530376 | kg·m² | Principal moment Y (converted from g·mm²) |
+| `Pz` | 0.01286669027 | kg·m² | Principal moment Z (converted from g·mm²) |
 
-Based on a 2U CubeSat (10×10×20 cm, 2 kg). Adjust for different form factors:
-- **1U:** `[0.002, 0.002, 0.002]`
-- **3U:** `[0.023, 0.023, 0.003]`
+Principal-axis directions are normalized/orthogonalized, then used to build the full body-frame tensor:
+
+`I_body = R * diag(Px, Py, Pz) * R^T`
+
+The loader validates symmetry and positive-definiteness before simulation starts.
 
 ## 2. Magnetorquer Electrical Properties
 
@@ -36,8 +40,10 @@ Based on a 2U CubeSat (10×10×20 cm, 2 kg). Adjust for different form factors:
 | Parameter | Value | Description |
 |---|---|---|
 | B₀ | 50 µT | Earth's field magnitude |
-| Orbit period | 5400s (90 min) | LEO orbital period |
-| Inclination | 51.6° | ISS-like orbit |
+| Orbit period | 5739s (95.65 min) | W26 source value |
+| Inclination | 97.5977° | W26 source value |
+| RAAN | 41.2° | W26 source note (terminator reference) |
+| Semimajor axis | 6,928,140 m | W26 source value |
 | Dipole tilt | 11.7° | Earth's magnetic axis tilt |
 | Earth rotation | 86400s | Sidereal day period |
 
@@ -83,7 +89,19 @@ Host/Firmware packet compatibility:
 
 - Input packet format: `<H3f3f3f4f5fBHH`
 - Input packet size: `79` bytes
-- Host and firmware versions must match this schema.
+- Output payload format (after sync bytes): `<3fB9hB>`
+- Output payload size: `32` bytes (`34` including sync header)
+- Host and firmware versions must match this schema (`telemetry_flags` version bits).
+
+### Telemetry Quantization Scales
+
+**File:** `cube_sat_nucleo/Application/Algorithms/Inc/config.h`
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `TELEMETRY_PACKET_VERSION` | `1` | Host/Firmware output packet version |
+| `M_CMD_FULL_SCALE_AM2` | `8.0` | Q15 full-scale for commanded dipole telemetry |
+| `TAU_FULL_SCALE_NM` | `0.05` | Q15 full-scale for raw/projected torque telemetry |
 
 ## 5. State Machine Thresholds
 

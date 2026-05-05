@@ -41,11 +41,21 @@ extern UART_HandleTypeDef huart2; // For logging
 #define SHTP_REPORT_TIMESTAMP_REBASE     0xFA
 
 // Sensor Report IDs
+#define SHTP_REPORT_ACCELEROMETER        0x01  // (Channel 3) Calibrated
 #define SHTP_REPORT_ROTATION_VECTOR      0x05  // (Channel 3)
 #define SHTP_REPORT_GAME_ROTATION_VECTOR 0x08  // (Channel 3) No Mag
 #define SHTP_REPORT_GYROSCOPE            0x02  // (Channel 3) Calibrated
 #define SHTP_REPORT_MAGNETIC_FIELD       0x03  // (Channel 3) Calibrated
 #define SHTP_REPORT_LINEAR_ACCELERATION  0x04  // (Channel 3) No Gravity
+#define SHTP_REPORT_GRAVITY              0x06  // (Channel 3)
+#define SHTP_REPORT_GYROSCOPE_UNCAL      0x07  // (Channel 3)
+#define SHTP_REPORT_GEOMAGNETIC_RV       0x09  // (Channel 3)
+#define SHTP_REPORT_MAGNETIC_FIELD_UNCAL 0x0F  // (Channel 3)
+#define SHTP_REPORT_RAW_ACCELEROMETER    0x14  // (Channel 3)
+#define SHTP_REPORT_RAW_GYROSCOPE        0x15  // (Channel 3)
+#define SHTP_REPORT_RAW_MAGNETOMETER     0x16  // (Channel 3)
+#define SHTP_REPORT_ARVR_STAB_RV         0x28  // (Channel 3)
+#define SHTP_REPORT_ARVR_STAB_GRV        0x29  // (Channel 3)
 #define SHTP_REPORT_GYRO_ROTATION_VECTOR 0x20  // (Channel 5) Low-latency (Optional)
 
 
@@ -83,6 +93,8 @@ typedef struct {
     bno085_quat_t quat;          // Rotation Vector (Fused 9-axis)
     bno085_quat_t game_quat;     // Game Rot Vector (Fused 6-axis, no mag)
     bno085_vec3_t lin_accel;     // Linear Acceleration (m/s^2)
+    bno085_vec3_t accel;         // Calibrated Accelerometer (m/s^2)
+    bno085_vec3_t gravity;       // Gravity vector (m/s^2)
     bno085_vec3_t gyro;          // Calibrated Gyro (rad/s)
     bno085_vec3_t mag;           // Magnetic Field (uTesla)
 
@@ -99,8 +111,11 @@ bool BNO085_WaitForAck(bno085_t* dev);
 bool BNO085_EnableRotationVector(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableGameRotationVector(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableLinearAccelerometer(bno085_t* dev, uint32_t interval_us);
+bool BNO085_EnableAccelerometer(bno085_t* dev, uint32_t interval_us);
+bool BNO085_EnableGravity(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableGyroscope(bno085_t* dev, uint32_t interval_us);
 bool BNO085_EnableMagnetometer(bno085_t* dev, uint32_t interval_us);
+bool BNO085_EnableMagnetometerUncal(bno085_t* dev, uint32_t interval_us);
 
 // --- Get Data ---
 bool BNO085_GetQuaternion(bno085_t* dev, bno085_quat_t* out);
