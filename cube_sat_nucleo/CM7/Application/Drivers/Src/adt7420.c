@@ -1,12 +1,24 @@
 #include "adt7420.h"
 
+#define ADT7420_I2C_TIMEOUT_MS 20U
+
+typedef struct {
+    volatile uint8_t request_pending;
+    volatile uint8_t sample_valid;
+    volatile uint8_t latest_status;
+    volatile uint32_t last_sample_tick_ms;
+    volatile float latest_temp_c;
+} adt7420_async_state_t;
+
+static adt7420_async_state_t g_async_state = {0};
+
 static HAL_StatusTypeDef wr_u8(ADT7420_Handle *h, uint8_t reg, uint8_t val) {
     return HAL_I2C_Mem_Write(h->hi2c, (h->addr7 << 1), reg,
-                             I2C_MEMADD_SIZE_8BIT, &val, 1, HAL_MAX_DELAY);
+                             I2C_MEMADD_SIZE_8BIT, &val, 1, ADT7420_I2C_TIMEOUT_MS);
 }
 static HAL_StatusTypeDef rd_u8(ADT7420_Handle *h, uint8_t reg, uint8_t *val) {
     return HAL_I2C_Mem_Read(h->hi2c, (h->addr7 << 1), reg,
-                            I2C_MEMADD_SIZE_8BIT, val, 1, HAL_MAX_DELAY);
+                            I2C_MEMADD_SIZE_8BIT, val, 1, ADT7420_I2C_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef ADT7420_ReadID(ADT7420_Handle *h, uint8_t *id) {
@@ -30,7 +42,7 @@ HAL_StatusTypeDef ADT7420_ReadRaw(ADT7420_Handle *h, int16_t *raw) {
     HAL_StatusTypeDef st = HAL_I2C_Mem_Read(h->hi2c, (h->addr7 << 1),
                                             ADT7420_REG_TEMP_MSB,
                                             I2C_MEMADD_SIZE_8BIT,
-                                            buf, 2, HAL_MAX_DELAY);
+                                            buf, 2, ADT7420_I2C_TIMEOUT_MS);
     if (st != HAL_OK) return st;
     *raw = (int16_t)((buf[0] << 8) | buf[1]);
     return HAL_OK;
@@ -55,5 +67,63 @@ HAL_StatusTypeDef ADT7420_Init(ADT7420_Handle *h, I2C_HandleTypeDef *hi2c, uint8
     if (st != HAL_OK) return st;
     if (id != ADT7420_ID_EXPECTED) return HAL_ERROR;
     HAL_Delay(250);
+    g_async_state.request_pending = 0U;
+    g_async_state.sample_valid = 0U;
+    g_async_state.latest_status = 0U;
+    g_async_state.last_sample_tick_ms = 0U;
+    g_async_state.latest_temp_c = 0.0f;
     return HAL_OK;
+}
+
+void ADT7420_SubmitSampleRequest(void)
+{
+    g_async_state.request_pending = 1U;
+}
+
+void ADT7420_RunAsyncSample(ADT7420_Handle *h)
+{
+    if (h == NULL || g_async_state.request_pending == 0U) {
+        return;
+    }
+    g_async_state.request_pending = 0U;
+    float temp_c = 0.0f;
+    uint8_t status = 0U;
+    if (ADT7420_ReadCelsius(h, &temp_c) == HAL_OK) {
+        (void)rd_u8(h, ADT7420_REG_STATUS, &status);
+        g_async_state.latest_temp_c = temp_c;
+        g_async_state.latest_status = status;
+        g_async_state.last_sample_tick_ms = HAL_GetTick();
+        g_async_state.sample_valid = 1U;
+    }
+}
+
+int ADT7420_GetLatestSample(float *temp_c, uint32_t *age_ms, uint32_t now_ms)
+{
+    if (g_async_state.sample_valid == 0U) {
+        return 0;
+    }
+    if (temp_c != NULL) {
+        *temp_c = g_async_state.latest_temp_c;
+    }
+    if (age_ms != NULL) {
+        *age_ms = now_ms - g_async_state.last_sample_tick_ms;
+    }
+    return 1;
+}
+
+int ADT7420_GetLatestSampleWithStatus(float *temp_c, uint8_t *status, uint32_t *age_ms, uint32_t now_ms)
+{
+    if (g_async_state.sample_valid == 0U) {
+        return 0;
+    }
+    if (temp_c != NULL) {
+        *temp_c = g_async_state.latest_temp_c;
+    }
+    if (status != NULL) {
+        *status = g_async_state.latest_status;
+    }
+    if (age_ms != NULL) {
+        *age_ms = now_ms - g_async_state.last_sample_tick_ms;
+    }
+    return 1;
 }

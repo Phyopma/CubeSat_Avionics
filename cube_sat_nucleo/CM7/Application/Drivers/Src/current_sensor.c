@@ -2,12 +2,10 @@
 
 typedef struct {
     volatile uint8_t request_pending;
-    volatile uint8_t transfer_in_progress;
     volatile uint8_t sample_valid;
     volatile uint32_t last_sample_tick_ms;
     volatile float latest_current_amps;
-
-    uint8_t raw_buf[2];
+    volatile float latest_bus_voltage_volts;
 } current_sensor_async_state_t;
 
 static current_sensor_async_state_t g_async_state = {0};
@@ -20,6 +18,20 @@ static void write_reg(uint8_t reg, uint16_t val) {
     data[2] = val & 0xFF;        // Low Byte
     HAL_I2C_Master_Transmit(&hi2c1, INA219_ADDR, data, 3, 10);
 }
+
+// Helper: Read 16-bit Register
+static uint16_t read_reg(uint8_t reg) {
+    uint8_t reg_addr = reg;
+    uint8_t buffer[2] = {0, 0};
+
+    // 1. Send Register Address
+    HAL_I2C_Master_Transmit(&hi2c1, INA219_ADDR, &reg_addr, 1, 10);
+    // 2. Read 2 Bytes
+    HAL_I2C_Master_Receive(&hi2c1, INA219_ADDR, buffer, 2, 10);
+
+    return (uint16_t)((buffer[0] << 8) | buffer[1]);
+}
+
 
 void CurrentSensor_Init(void)
 {
@@ -41,14 +53,25 @@ void CurrentSensor_Init(void)
     g_async_state.sample_valid = 0U;
     g_async_state.last_sample_tick_ms = 0U;
     g_async_state.latest_current_amps = 0.0f;
+    g_async_state.latest_bus_voltage_volts = 0.0f;
 }
 
-float CurrentSensor_ConvertRawToAmps(int16_t raw_value)
+float CurrentSensor_Read_Amps(void)
 {
+	// Read Raw signed 16-bit value
+	int16_t raw = (int16_t)read_reg(REG_CURRENT);
+
 	// Convert to Amps
 	// LSB = 0.1mA -> divide by 10 to get mA, divide by 10000 to get Amps
 	// simpler: raw * 0.0001
-	return (float)raw_value * 0.0001f;
+	return (float)raw * 0.0001f;
+}
+
+float CurrentSensor_Read_BusVoltageVolts(void)
+{
+    uint16_t raw = read_reg(REG_BUS_VOLT);
+    uint16_t bus_voltage_raw = (uint16_t)((raw >> 3) & 0x1FFFU);
+    return (float)bus_voltage_raw * 0.004f;
 }
 
 void CurrentSensor_SubmitSampleRequest(void)
@@ -56,55 +79,16 @@ void CurrentSensor_SubmitSampleRequest(void)
     g_async_state.request_pending = 1U;
 }
 
-/*
- * Function will process samples and return data on
- * hi2c1 line. Data will show up async and
- * processed by the callback function.
- */
-void CurrentSensor_ProcessSample(void)
+void CurrentSensor_RunAsyncSample(void)
 {
     if (g_async_state.request_pending == 0U) {
         return;
     }
-
-    if (g_async_state.transfer_in_progress != 0U) {
-    	return;
-    }
-
     g_async_state.request_pending = 0U;
-    g_async_state.transfer_in_progress = 1U;
-
-    /*
-     * HAL_I2C_Mem_Read_IT is used for async i2c transfer.\
-     * Callback function will process data
-     */
-    if (HAL_I2C_Mem_Read_IT(&hi2c1, INA219_ADDR, &reg_addr, I2C_MEMADD_SIZE_8BIT, buffer, 2) != HAL_OK)
-    {
-    	g_async_state.transfer_in_progress = 0U; // i2c transfer did not start
-    }
-}
-
-/*
- * This is the I2C callback and will run when data is read on the line.
- * Note that this function assumes the only data on hi2c1 is data from
- * the current sensor.
- */
-void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
-	if (hi2c != &hi2c1)
-	{
-		return;
-	}
-
-    g_async_state.transfer_in_progress = 0U;
-    g_async_state.sample_ready = 1U;
+    g_async_state.latest_current_amps = CurrentSensor_Read_Amps();
+    g_async_state.latest_bus_voltage_volts = CurrentSensor_Read_BusVoltageVolts();
     g_async_state.last_sample_tick_ms = HAL_GetTick();
-
-    int16_t raw_current =
-           (int16_t)(((uint16_t)g_async_state.raw_buf[0] << 8) |
-                     ((uint16_t)g_async_state.raw_buf[1]));
-
-    g_async_state.latest_current_amps = CurrentSensor_ConvertRawToAmps(raw_current);
+    g_async_state.sample_valid = 1U;
 }
 
 int CurrentSensor_GetLatestSample(float *amps, uint32_t *age_ms, uint32_t now_ms)
@@ -114,6 +98,23 @@ int CurrentSensor_GetLatestSample(float *amps, uint32_t *age_ms, uint32_t now_ms
     }
     if (amps != NULL) {
         *amps = g_async_state.latest_current_amps;
+    }
+    if (age_ms != NULL) {
+        *age_ms = now_ms - g_async_state.last_sample_tick_ms;
+    }
+    return 1;
+}
+
+int CurrentSensor_GetLatestPowerSample(float *amps, float *bus_voltage_volts, uint32_t *age_ms, uint32_t now_ms)
+{
+    if (g_async_state.sample_valid == 0U) {
+        return 0;
+    }
+    if (amps != NULL) {
+        *amps = g_async_state.latest_current_amps;
+    }
+    if (bus_voltage_volts != NULL) {
+        *bus_voltage_volts = g_async_state.latest_bus_voltage_volts;
     }
     if (age_ms != NULL) {
         *age_ms = now_ms - g_async_state.last_sample_tick_ms;

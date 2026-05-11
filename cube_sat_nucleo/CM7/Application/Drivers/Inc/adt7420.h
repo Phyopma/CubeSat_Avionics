@@ -22,5 +22,9 @@ HAL_StatusTypeDef ADT7420_ReadConfig(ADT7420_Handle *h, uint8_t *cfg);
 HAL_StatusTypeDef ADT7420_Set16Bit(ADT7420_Handle *h, uint8_t enable);
 HAL_StatusTypeDef ADT7420_ReadRaw(ADT7420_Handle *h, int16_t *raw);
 HAL_StatusTypeDef ADT7420_ReadCelsius(ADT7420_Handle *h, float *temp_c);
+void ADT7420_SubmitSampleRequest(void);
+void ADT7420_RunAsyncSample(ADT7420_Handle *h);
+int ADT7420_GetLatestSample(float *temp_c, uint32_t *age_ms, uint32_t now_ms);
+int ADT7420_GetLatestSampleWithStatus(float *temp_c, uint8_t *status, uint32_t *age_ms, uint32_t now_ms);
 
 #endif

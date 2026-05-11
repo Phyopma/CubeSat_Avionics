@@ -1,33 +1,78 @@
+/* Application/Algorithms/Src/inner_loop_control.c */
 #include "inner_loop_control.h"
 #include "config.h"
 #include "main.h"
 #include "hbridge.h"
 #include "current_sensor.h"
 #include "pi_controller.h"
+#include "outer_loop_control.h"
 #include "stdio.h"
 #include "math.h"
-#include "outer_loop_control.h" // Required for OuterLoop_GetMode
 
 // Private State Variables
 PI_Config_t pi_x, pi_y, pi_z;
 mtq_state_t state;
 static float runtime_voltage_limit = PIL_MAX_VOLTAGE;
+static volatile uint8_t g_state_valid = 0U;
 
-#ifndef SIMULATION_MODE
 static float filtered_current_z = 0.0f; // Only Z has real sensor for now
-#endif
 
 // HITL Sync Flag
 volatile uint8_t sim_data_ready = 0;
 
-void InnerLoop_Update_SimDataAvailable(void) {
+void InnerLoop_Update_SimDataAvailable(void)
+{
     sim_data_ready = 1;
 }
 
-static float ClampF(float x, float lo, float hi) {
-    if (x < lo) return lo;
-    if (x > hi) return hi;
+static float ClampF(float x, float lo, float hi)
+{
+    if (x < lo)
+        return lo;
+    if (x > hi)
+        return hi;
     return x;
+}
+
+static int16_t QuantizeQ15(float value, float full_scale, uint8_t *saturated)
+{
+    if (full_scale <= 1e-12f)
+    {
+        if (saturated != NULL)
+        {
+            *saturated = 1u;
+        }
+        return 0;
+    }
+
+    float normalized = value / full_scale;
+    if (normalized > 1.0f)
+    {
+        normalized = 1.0f;
+        if (saturated != NULL)
+        {
+            *saturated = 1u;
+        }
+    }
+    else if (normalized < -1.0f)
+    {
+        normalized = -1.0f;
+        if (saturated != NULL)
+        {
+            *saturated = 1u;
+        }
+    }
+
+    float scaled = normalized * 32767.0f;
+    if (scaled >= 32767.0f)
+    {
+        return 32767;
+    }
+    if (scaled <= -32768.0f)
+    {
+        return -32768;
+    }
+    return (int16_t)lroundf(scaled);
 }
 
 void InnerLoop_SetVoltageLimit(float v_limit)
@@ -58,8 +103,8 @@ void InnerLoop_Init(void)
     HBridge_Init();
     CurrentSensor_Init();
 
-    // 2. Initialize PI Controllers (Same gains for all axes for now)
-    // Parameters moved to Application/Algorithms/Inc/config.h
+    // 2. Initialize PI Controllers (Same gains for all axes)
+    // Parameters from Application/Algorithms/Inc/config.h
     PI_Init(&pi_x, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
     PI_Init(&pi_y, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
     PI_Init(&pi_z, PIL_KP, PIL_KI, PIL_T, PIL_MAX_VOLTAGE);
@@ -77,61 +122,25 @@ void InnerLoop_SetTargetCurrent(float x, float y, float z)
 void InnerLoop_Update(void)
 {
 #ifdef MTQ_MODE_OPEN_LOOP
-    // === MODE A: OPEN LOOP (Active) ===
-    // Physics Model: V = I * R
+    // === MODE A: OPEN LOOP ===
     state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
     state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
     state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
 
 #else
-#ifdef SIMULATION_MODE
-    // === MODE B-Sim: HITL SIMULATION ===
-    // 1. In Simulation Mode, we override the PHYSICAL Sensor readings
-    //    with data received from Python via UART.
-    state.measured_current_x = sim_input.current_amps_x;
-    state.measured_current_y = sim_input.current_amps_y;
-    state.measured_current_z = sim_input.current_amps_z;
-    
-    // 2. Run Control Logic (PI or Open Loop) when new data arrives
-    if (sim_data_ready) {
-        if (sim_input.debug_flags & 0x01) {
-            // === OPEN LOOP OVERRIDE (Debug) ===
-            // Force V = I * R (Bypassing PI)
-            state.command_voltage_x = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_x * MTQ_COIL_RESISTANCE));
-            state.command_voltage_y = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_y * MTQ_COIL_RESISTANCE));
-            state.command_voltage_z = fmaxf(-runtime_voltage_limit, fminf(runtime_voltage_limit, state.target_current_z * MTQ_COIL_RESISTANCE));
-        } else {
-            // === CLOSED LOOP (PI) ===
-            state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
-            state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
-            state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
-        }
-        sim_data_ready = 0;
-    }
-    
-    // 3. Send Output to Simulator (Rate Limited to 100Hz to avoid UART saturation)
-    static uint32_t last_telemetry_tick = 0;
-    uint32_t current_tick = HAL_GetTick();
-    if (current_tick - last_telemetry_tick >= 10) { // 10ms = 100Hz
-        sim_output.header = 0x62B5; // Sync Word (Sends 0xB5 then 0x62 on Little Endian)
-        sim_output.command_voltage_x = state.command_voltage_x;
-        sim_output.command_voltage_y = state.command_voltage_y;
-        sim_output.command_voltage_z = state.command_voltage_z;
-        sim_output.adcs_mode = OuterLoop_GetTelemetryByte();
-        
-        HAL_UART_Transmit_IT(&huart2, (uint8_t*)&sim_output, sizeof(sim_output));
-        last_telemetry_tick = current_tick;
-    }
-    
-#else
     // === MODE C: REAL HARDWARE (Partial) ===
-    // X and Y have no sensors, assume 0 measurement (Open Loop-ish for PI)
-    // Or just set measured = 0.
+    // X and Y have no sensors, assume 0 measurement
     state.measured_current_x = 0.0f;
     state.measured_current_y = 0.0f;
 
-    // Z-Axis: Read Raw Hardware Value
-    float raw_val_z = CurrentSensor_Read_Amps();
+    // Z-axis current sample is produced asynchronously in task context.
+    // Do not touch I2C from TIM6 ISR path.
+    float sampled_current_z = 0.0f;
+    float raw_val_z = fabsf(filtered_current_z);
+    if (CurrentSensor_GetLatestSample(&sampled_current_z, NULL, HAL_GetTick()) != 0)
+    {
+        raw_val_z = fabsf(sampled_current_z);
+    }
 
     // Inject Sign (Polarity logic for Z)
     float signed_raw_z = (state.command_voltage_z < 0.0f) ? -1.0f * fabsf(raw_val_z) : fabsf(raw_val_z);
@@ -140,22 +149,31 @@ void InnerLoop_Update(void)
     filtered_current_z = (filtered_current_z * 0.90f) + (signed_raw_z * 0.10f);
     state.measured_current_z = filtered_current_z;
 
-    // Run PI on all axes (1kHz is fine for real hardware)
+    // Run PI on all axes
     state.command_voltage_x = PI_Update(&pi_x, state.target_current_x, state.measured_current_x);
     state.command_voltage_y = PI_Update(&pi_y, state.target_current_y, state.measured_current_y);
     state.command_voltage_z = PI_Update(&pi_z, state.target_current_z, state.measured_current_z);
 #endif
-#endif
 
-    // 3. Apply Command to H-Bridge Drivers
-    // Axis 0 = X, 1 = Y, 2 = Z
-    // This MUST run every 1ms to keep PWM active/updated
+    // 3. Apply Command to H-Bridge Drivers (Axis 0=X, 1=Y, 2=Z)
     HBridge_SetVoltage(0, state.command_voltage_x, runtime_voltage_limit);
     HBridge_SetVoltage(1, state.command_voltage_y, runtime_voltage_limit);
     HBridge_SetVoltage(2, state.command_voltage_z, runtime_voltage_limit);
+    g_state_valid = 1U;
 }
 
 mtq_state_t InnerLoop_GetState(void)
 {
     return state;
+}
+
+int InnerLoop_GetStateSnapshot(mtq_state_t *out, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    if (out == NULL || g_state_valid == 0U)
+    {
+        return 0;
+    }
+    *out = state;
+    return 1;
 }
