@@ -34,47 +34,6 @@ static float ClampF(float x, float lo, float hi)
     return x;
 }
 
-static int16_t QuantizeQ15(float value, float full_scale, uint8_t *saturated)
-{
-    if (full_scale <= 1e-12f)
-    {
-        if (saturated != NULL)
-        {
-            *saturated = 1u;
-        }
-        return 0;
-    }
-
-    float normalized = value / full_scale;
-    if (normalized > 1.0f)
-    {
-        normalized = 1.0f;
-        if (saturated != NULL)
-        {
-            *saturated = 1u;
-        }
-    }
-    else if (normalized < -1.0f)
-    {
-        normalized = -1.0f;
-        if (saturated != NULL)
-        {
-            *saturated = 1u;
-        }
-    }
-
-    float scaled = normalized * 32767.0f;
-    if (scaled >= 32767.0f)
-    {
-        return 32767;
-    }
-    if (scaled <= -32768.0f)
-    {
-        return -32768;
-    }
-    return (int16_t)lroundf(scaled);
-}
-
 void InnerLoop_SetVoltageLimit(float v_limit)
 {
     float clamped = ClampF(v_limit, 0.5f, 12.0f);

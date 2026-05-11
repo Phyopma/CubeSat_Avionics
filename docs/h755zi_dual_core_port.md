@@ -164,13 +164,26 @@ EOF
 ```
 
 - H7 include/type syntax check for migrated CM7 sources passed with Apple Clang and the project H7 HAL/CMSIS/FreeRTOS include paths. This is not a substitute for an `arm-none-eabi-gcc` link, but it catches local H7 header/API syntax issues in the migrated files.
-- `arm-none-eabi-gcc (GCC) 16.1.0` syntax check for the migrated CM7 sources passed with Cortex-M7 flags and temporary standard-library stubs. This validates the migrated files against the GCC ARM parser and H7 project headers, but it still is not a full firmware link.
+- `arm-none-eabi-gcc (GCC) 16.1.0` syntax check for the migrated CM7 sources passed with Cortex-M7 flags and temporary standard-library stubs. This validates the migrated files against the GCC ARM parser and H7 project headers.
+- Dockerized Debian `gcc-arm-none-eabi` + `libnewlib-arm-none-eabi` CM7 ELF build passed through `scripts/build_h755zi_cm7_docker.sh` with `-Wall -Werror`.
+
+```sh
+scripts/build_h755zi_cm7_docker.sh
+```
+
+Build output:
+
+```text
+   text    data     bss     dec     hex filename
+ 124872     544   50680  176096   2afe0 build/h755zi_cm7_docker/cube_sat_nucleo_cm7.elf
+CM7 firmware build: PASS build/h755zi_cm7_docker/cube_sat_nucleo_cm7.elf
+```
 
 Blocked locally:
 
 - `STM32CubeIDE` and `STM32_Programmer_CLI` were not found on this machine.
-- The Homebrew `arm-none-eabi-gcc` formula does not include the embedded C library/spec files (`nano.specs`, `nosys.specs`, newlib), so full ELF link validation remains blocked without STM32CubeCLT/STM32CubeIDE or a complete Arm GNU embedded toolchain package.
 - The tracked `cube_sat_nucleo/Debug` and `cube_sat_nucleo/.cproject` files still reference the old STM32L476 layout. Regenerate project/build metadata from `cube_sat_nucleo.ioc` in STM32CubeIDE/CubeMX before trusting `Debug/makefile`.
+- Flash/programmer validation remains blocked without `STM32_Programmer_CLI`, a connected NUCLEO-H755ZI-Q over ST-LINK, and hardware wiring checks.
 
 Expected STM32CubeCLT flow after regeneration:
 
