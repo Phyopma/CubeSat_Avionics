@@ -132,6 +132,9 @@ The old H755ZI generated value was `configTOTAL_HEAP_SIZE=15360`, which is below
 
 Validated locally:
 
+- Remote refs refreshed with `git fetch --all --prune` before branch coverage audit.
+- Host tests:
+
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -Icube_sat_nucleo/CM7/Application/Algorithms/Inc \
   tests/imu_runtime_test.c cube_sat_nucleo/CM7/Application/Algorithms/Src/imu_runtime.c \
@@ -145,6 +148,22 @@ cc -std=c11 -Wall -Wextra -Werror -Icube_sat_nucleo/CM7/Application/Algorithms/I
   tests/manual_validation_test.c cube_sat_nucleo/CM7/Application/Algorithms/Src/manual_validation.c \
   -o /tmp/manual_validation_test -lm && /tmp/manual_validation_test
 ```
+
+- CM7 FreeRTOS heap static check:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -Icube_sat_nucleo/CM7/Core/Inc -xc \
+  -o /tmp/freertos_heap_check - <<'EOF'
+#include <stddef.h>
+#include "FreeRTOSConfig.h"
+_Static_assert(configTOTAL_HEAP_SIZE >= ((size_t)32768),
+               "CM7 FreeRTOS heap must cover migrated runtime tasks");
+int main(void) { return 0; }
+EOF
+/tmp/freertos_heap_check
+```
+
+- H7 include/type syntax check for migrated CM7 sources passed with Apple Clang and the project H7 HAL/CMSIS/FreeRTOS include paths. This is not a substitute for an `arm-none-eabi-gcc` link, but it catches local H7 header/API syntax issues in the migrated files.
 
 Blocked locally:
 
