@@ -79,3 +79,11 @@ build/
 .agent
 .DS_Store
 COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilizati.pdf
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Local datasheet drops
+docs/data_sheets/BNO08.pdf
+docs/data_sheets/BNO08.txt
