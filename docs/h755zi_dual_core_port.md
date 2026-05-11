@@ -164,10 +164,12 @@ EOF
 ```
 
 - H7 include/type syntax check for migrated CM7 sources passed with Apple Clang and the project H7 HAL/CMSIS/FreeRTOS include paths. This is not a substitute for an `arm-none-eabi-gcc` link, but it catches local H7 header/API syntax issues in the migrated files.
+- `arm-none-eabi-gcc (GCC) 16.1.0` syntax check for the migrated CM7 sources passed with Cortex-M7 flags and temporary standard-library stubs. This validates the migrated files against the GCC ARM parser and H7 project headers, but it still is not a full firmware link.
 
 Blocked locally:
 
-- `STM32CubeIDE`, `STM32_Programmer_CLI`, and `arm-none-eabi-gcc` were not found on this machine.
+- `STM32CubeIDE` and `STM32_Programmer_CLI` were not found on this machine.
+- The Homebrew `arm-none-eabi-gcc` formula does not include the embedded C library/spec files (`nano.specs`, `nosys.specs`, newlib), so full ELF link validation remains blocked without STM32CubeCLT/STM32CubeIDE or a complete Arm GNU embedded toolchain package.
 - The tracked `cube_sat_nucleo/Debug` and `cube_sat_nucleo/.cproject` files still reference the old STM32L476 layout. Regenerate project/build metadata from `cube_sat_nucleo.ioc` in STM32CubeIDE/CubeMX before trusting `Debug/makefile`.
 
 Expected STM32CubeCLT flow after regeneration:
