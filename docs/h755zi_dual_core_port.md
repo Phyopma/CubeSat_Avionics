@@ -165,7 +165,7 @@ EOF
 
 - H7 include/type syntax check for migrated CM7 sources passed with Apple Clang and the project H7 HAL/CMSIS/FreeRTOS include paths. This is not a substitute for an `arm-none-eabi-gcc` link, but it catches local H7 header/API syntax issues in the migrated files.
 - `arm-none-eabi-gcc (GCC) 16.1.0` syntax check for the migrated CM7 sources passed with Cortex-M7 flags and temporary standard-library stubs. This validates the migrated files against the GCC ARM parser and H7 project headers.
-- Dockerized Debian `gcc-arm-none-eabi` + `libnewlib-arm-none-eabi` CM7 ELF build passed through `scripts/build_h755zi_cm7_docker.sh` with `-Wall -Werror`.
+- Dockerized Debian `gcc-arm-none-eabi` + `libnewlib-arm-none-eabi` CM7 ELF build passed through `scripts/build_h755zi_cm7_docker.sh` with `-Wall -Werror`. The script builds and reuses the local `eecs159-h755zi-cm7-builder:bookworm` image from `docker/h755zi-cm7/Dockerfile`; set `REBUILD_IMAGE=1` to rebuild the toolchain image.
 
 ```sh
 scripts/build_h755zi_cm7_docker.sh

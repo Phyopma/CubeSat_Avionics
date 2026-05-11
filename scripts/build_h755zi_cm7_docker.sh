@@ -2,8 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IMAGE:-debian:bookworm-slim}"
+IMAGE="${IMAGE:-eecs159-h755zi-cm7-builder:bookworm}"
+DOCKERFILE_DIR="${DOCKERFILE_DIR:-${REPO_ROOT}/docker/h755zi-cm7}"
 BUILD_DIR="${BUILD_DIR:-build/h755zi_cm7_docker}"
+
+if [[ "${REBUILD_IMAGE:-0}" == "1" ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+  docker build -t "${IMAGE}" "${DOCKERFILE_DIR}"
+fi
 
 docker run --rm -i \
   -v "${REPO_ROOT}:/work" \
@@ -13,14 +18,6 @@ docker run --rm -i \
 set -euo pipefail
 
 BUILD_DIR="$1"
-
-apt-get update >/tmp/apt-update.log
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  gcc-arm-none-eabi \
-  binutils-arm-none-eabi \
-  libnewlib-arm-none-eabi \
-  make \
-  ca-certificates >/tmp/apt-install.log
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}/obj"
