@@ -13,6 +13,7 @@ void AppRuntime_Init(void);
 void AppRuntime_Start(void);
 void AppRuntime_RunOnce(void);
 void AppRuntime_OnControlTickFromISR(void);
+void AppRuntime_OnConsoleByteFromISR(uint8_t byte);
 
 // Exported for UART ISR to notify ADCS task of new sim packet
 extern TaskHandle_t g_adcs_task_handle;

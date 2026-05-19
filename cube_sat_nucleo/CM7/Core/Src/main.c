@@ -113,6 +113,10 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+  serial_log_init(&huart2);
+  static uint8_t boot_banner[] = "UART DMA logger online\r\n";
+  (void)HAL_UART_Transmit(&huart2, boot_banner, (uint16_t)(sizeof(boot_banner) - 1U), 20U);
+
   AppRuntime_Init();
 
   // Start receiving the first Sync Byte (State Machine)
@@ -205,6 +209,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
       {
         uart_rx_state = RX_SYNC2;
       }
+      else
+      {
+        AppRuntime_OnConsoleByteFromISR(uart_sync_byte);
+      }
       if (HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1) != HAL_OK)
       {
         SimUart_RearmSyncRx();
@@ -225,6 +233,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
       }
       else
       {
+        AppRuntime_OnConsoleByteFromISR(uart_sync_byte);
         uart_rx_state = RX_SYNC1;
         if (HAL_UART_Receive_IT(&huart2, &uart_sync_byte, 1) != HAL_OK)
         {

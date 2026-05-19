@@ -62,6 +62,7 @@ dkms.conf
 
 # IDE metadata and user settings
 .metadata
+.vscode/
 stm32cubemx/
 *.backup
 
@@ -83,4 +84,16 @@ build/
 .DS_Store
 COTS Implementation of Magnetorquer-Only CubeSat Spin Stabilizati.pdf
 
-docs/data_sheets/
+# Python cache files
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+.pytest_cache/
+
+# Python simulation artifacts
+physics_engine/results/
+
+# Local datasheet drops
+docs/data_sheets/BNO08.pdf
+docs/data_sheets/BNO08.txt
