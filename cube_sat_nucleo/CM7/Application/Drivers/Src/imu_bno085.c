@@ -493,9 +493,6 @@ bool BNO085_RequestFeatureState(bno085_t *dev, uint8_t report_id)
     payload[1] = report_id;
     return write_packet(dev, SHTP_CHANNEL_CONTROL, payload, sizeof(payload));
 }
-bool BNO085_EnableMagnetometerUncal(bno085_t* dev, uint32_t interval_us) {
-    return BNO085_SetFeature(dev, SHTP_REPORT_MAGNETIC_FIELD_UNCAL, interval_us);
-}
 
 bool BNO085_GetFeatureState(const bno085_t *dev, uint8_t report_id, bno085_feature_state_t *out)
 {
