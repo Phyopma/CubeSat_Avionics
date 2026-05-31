@@ -11,6 +11,19 @@ typedef enum {
     CTRL_MODE_POINTING
 } adcs_mode_t;
 
+typedef enum {
+    POINTING_TARGET_INERTIAL = 0,
+    POINTING_TARGET_SUN,
+    POINTING_TARGET_EARTH
+} pointing_target_t;
+
+typedef struct {
+    pointing_target_t source;
+    uint8_t vector_valid;
+    vec3_t body_axis;
+    vec3_t target_body;
+} adcs_pointing_target_t;
+
 typedef struct {
     adcs_mode_t mode;
     float k_bdot;
@@ -28,6 +41,7 @@ typedef struct {
     vec3_t mag_field;       // Tesla
     vec3_t gyro;            // rad/s
     quat_t orientation;
+    adcs_pointing_target_t pointing_target;
 } adcs_sensor_input_t;
 
 typedef struct {

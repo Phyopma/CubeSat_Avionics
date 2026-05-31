@@ -78,6 +78,7 @@ The logical peripheral mapping is retained from the old branch and translated to
 | IMU RST | PB5 | GPIO output |
 | IMU INT | PA10 | GPIO input, pull-up |
 | MTQ sleep/fault | PA4 / PA5 | GPIO output/input |
+| Photodiode D0-D3 | suggested PA6 / PC0 / PC1 / PC2 | ADC placeholder only; not generated in `.ioc` yet |
 
 Because Nucleo-64 and Nucleo-144 headers are physically different, verify the actual bench wiring against UM2408/schematics before flight or hardware-in-loop tests. The code preserves logical MCU pins; it does not prove the same jumper/header positions are used.
 

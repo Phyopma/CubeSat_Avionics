@@ -61,6 +61,13 @@
 // This constant converts dipole (A*m^2) to current (A)
 #define MTQ_DIPOLE_TO_AMP     (1.0f / 2.88f) // Datasheet: 2.88 Am^2/A (0.34 Am² @ 3.3V, R=28Ω)
 
+// Pointing target source:
+// 0 = legacy inertial/quaternion target, 1 = Sun vector from photodiodes, 2 = Earth vector placeholder.
+#define ADCS_DEFAULT_POINTING_TARGET_SOURCE 0U
+#define ADCS_POINTING_BODY_AXIS_X 0.0f
+#define ADCS_POINTING_BODY_AXIS_Y 0.0f
+#define ADCS_POINTING_BODY_AXIS_Z 1.0f
+
 // Hardware sensor logging (USB console demo mode)
 #define SENSOR_LOG_PRINT_PERIOD_MS 100U   // Consolidated sensor line print period
 #define SENSOR_SAMPLE_PERIOD_MS    10U    // Async sensor sample service period

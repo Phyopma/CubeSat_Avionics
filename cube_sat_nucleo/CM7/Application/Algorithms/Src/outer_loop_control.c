@@ -23,8 +23,57 @@ static void ResetModeTransitionState(void) {
     pointing_best_error_deg = 180.0f;
 }
 
-static float ComputePointingErrorDeg(quat_t q_curr) {
-    float dot_z = 1.0f - 2.0f * (q_curr.x * q_curr.x + q_curr.y * q_curr.y);
+static vec3_t QuaternionTargetBody(quat_t q_curr) {
+    float qw = q_curr.w, qx = q_curr.x, qy = q_curr.y, qz = q_curr.z;
+    return (vec3_t){
+        2.0f * (qx*qz - qw*qy),
+        2.0f * (qy*qz + qw*qx),
+        1.0f - 2.0f * (qx*qx + qy*qy)
+    };
+}
+
+static uint8_t SelectPointingGeometry(const adcs_sensor_input_t *input, vec3_t *body_axis, vec3_t *target_body) {
+    vec3_t axis = {0.0f, 0.0f, 1.0f};
+    vec3_t target = {0.0f, 0.0f, 1.0f};
+    pointing_target_t source = POINTING_TARGET_INERTIAL;
+
+    if (input == NULL || body_axis == NULL || target_body == NULL) {
+        return 0U;
+    }
+
+    source = input->pointing_target.source;
+    if (Vec3_Norm(input->pointing_target.body_axis) > 1.0e-6f) {
+        axis = Vec3_Normalize(input->pointing_target.body_axis);
+    }
+
+    switch (source) {
+        case POINTING_TARGET_INERTIAL:
+            target = QuaternionTargetBody(input->orientation);
+            break;
+        case POINTING_TARGET_SUN:
+        case POINTING_TARGET_EARTH:
+            if (input->pointing_target.vector_valid == 0U ||
+                Vec3_Norm(input->pointing_target.target_body) < 1.0e-6f) {
+                return 0U;
+            }
+            target = Vec3_Normalize(input->pointing_target.target_body);
+            break;
+        default:
+            return 0U;
+    }
+
+    *body_axis = axis;
+    *target_body = target;
+    return 1U;
+}
+
+static float ComputePointingErrorDeg(const adcs_sensor_input_t *input) {
+    vec3_t body_axis;
+    vec3_t target_body;
+    if (SelectPointingGeometry(input, &body_axis, &target_body) == 0U) {
+        return 180.0f;
+    }
+    float dot_z = Vec3_Dot(body_axis, target_body);
     dot_z = fmaxf(-1.0f, fminf(1.0f, dot_z));
     return acosf(dot_z) * 57.2957795f;
 }
@@ -248,22 +297,19 @@ static vec3_t Control_SpinStabilization(vec3_t B, vec3_t w) {
     return Vec3_ScalarMult(Vec3_Cross(B, tau_req), 1.0f / B2);
 }
 
-static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
-    // Convert current quaternion to target vector in body frame.
-    // For q_target = identity, target is Inertial Z-axis.
-    // target_body = R^T * [0, 0, 1] (3rd column of DCM)
-    float qw = q_curr.w, qx = q_curr.x, qy = q_curr.y, qz = q_curr.z;
-    vec3_t target_body = {
-        2.0f * (qx*qz - qw*qy),
-        2.0f * (qy*qz + qw*qx),
-        1.0f - 2.0f * (qx*qx + qy*qy)
-    };
-    
-    // Nadir pointing: align body Z-axis with target
-    vec3_t current_z = {0.0f, 0.0f, 1.0f};
+static vec3_t Control_PointingVector(vec3_t body_axis, vec3_t target_body, vec3_t w, vec3_t B) {
+    body_axis = Vec3_Normalize(body_axis);
+    target_body = Vec3_Normalize(target_body);
+    if (Vec3_Norm(body_axis) < 1.0e-6f || Vec3_Norm(target_body) < 1.0e-6f) {
+        last_projection_loss = 1.0f;
+        last_integral_limited = 1;
+        last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+        last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
+        return (vec3_t){0.0f, 0.0f, 0.0f};
+    }
     
     // Check for 180 degree singularity
-    float dot_z = Vec3_Dot(current_z, target_body);
+    float dot_z = Vec3_Dot(body_axis, target_body);
     dot_z = fmaxf(-1.0f, fminf(1.0f, dot_z));
     float err_deg = acosf(dot_z) * 57.2957795f;
     vec3_t err_vec;
@@ -272,7 +318,7 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
         // Apply a small geometric kick on X-axis to break symmetry.
         err_vec = (vec3_t){0.1f, 0.0f, 0.0f}; 
     } else {
-        err_vec = Vec3_Cross(current_z, target_body);
+        err_vec = Vec3_Cross(body_axis, target_body);
     }
     
     // Gain scheduling:
@@ -362,6 +408,19 @@ static vec3_t Control_Pointing(quat_t q_curr, vec3_t w, vec3_t B) {
     return m_point;
 }
 
+static vec3_t Control_Pointing(const adcs_sensor_input_t *input) {
+    vec3_t body_axis;
+    vec3_t target_body;
+    if (SelectPointingGeometry(input, &body_axis, &target_body) == 0U) {
+        last_projection_loss = 1.0f;
+        last_integral_limited = 1;
+        last_tau_raw = (vec3_t){0.0f, 0.0f, 0.0f};
+        last_tau_proj = (vec3_t){0.0f, 0.0f, 0.0f};
+        return Control_BDot_Internal(input->mag_field, input->gyro, 1U);
+    }
+    return Control_PointingVector(body_axis, target_body, input->gyro, input->mag_field);
+}
+
 static void Update_State_Machine(adcs_sensor_input_t *input) {
     if (force_mode_enabled) {
         OuterLoop_SetMode(forced_mode);
@@ -389,7 +448,7 @@ static void Update_State_Machine(adcs_sensor_input_t *input) {
             break;
 
         case CTRL_MODE_POINTING: {
-            float pointing_error_deg = ComputePointingErrorDeg(input->orientation);
+            float pointing_error_deg = ComputePointingErrorDeg(input);
             if (pointing_error_deg + POINTING_PROGRESS_EPS_DEG < pointing_best_error_deg) {
                 pointing_best_error_deg = pointing_error_deg;
                 pointing_no_progress_time = 0.0f;
@@ -453,7 +512,7 @@ void OuterLoop_Update(adcs_sensor_input_t *input, adcs_output_t *output, float d
             m_cmd = Control_SpinStabilization(input->mag_field, input->gyro);
             break;
         case CTRL_MODE_POINTING:
-            m_cmd = Control_Pointing(input->orientation, input->gyro, input->mag_field);
+            m_cmd = Control_Pointing(input);
             break;
         default:
             last_projection_loss = 0.0f;

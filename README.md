@@ -125,6 +125,7 @@ uv run simulation_host.py --realtime
 | [Firmware Design](./docs/stage2_firmware.md) | Control modes and state machine |
 | [Simulation Parameters](./docs/simulation_parameters.md) | Tuning guide and stress tests |
 | [HITL Framework](./docs/features/hitl_framework.md) | Debugging history |
+| [Photodiode Sun Pointing](./docs/photodiode_sun_pointing.md) | Four-photodiode Sun-vector estimator, ADC placeholder pins, and target-source integration |
 | [Physics Engine README](./physics_engine/README.md) | Protocol and usage details |
 
 ## Hardware

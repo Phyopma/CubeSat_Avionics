@@ -4,12 +4,14 @@
 #include "config.h"
 #include "imu_runtime.h"
 #include "manual_validation.h"
+#include "photodiode_runtime.h"
 #include "power_runtime.h"
 #include "inner_loop_control.h"
 #include "outer_loop_control.h"
 #include "math_lib.h"
 #include "current_sensor.h"
 #include "adt7420.h"
+#include "photodiode.h"
 #include "imu_bno085.h"
 #include "teleplot.h"
 #include "serial_log_dma.h"
@@ -55,6 +57,7 @@ static uint8_t g_power_avg_valid = 0U;
 static manual_validation_state_t g_manual_validation;
 static QueueHandle_t g_console_rx_queue = NULL;
 static volatile uint32_t g_console_rx_drop_count = 0U;
+static pointing_target_t g_pointing_target_source = POINTING_TARGET_INERTIAL;
 
 static void AppRuntime_BootPrint(const char *msg)
 {
@@ -136,6 +139,19 @@ static uint16_t AppRuntime_ClampUInt16(int32_t value)
 static int32_t AppRuntime_RoundToInt32(float value)
 {
     return (int32_t)((value >= 0.0f) ? (value + 0.5f) : (value - 0.5f));
+}
+
+static pointing_target_t AppRuntime_DefaultPointingTarget(void)
+{
+    switch ((uint32_t)ADCS_DEFAULT_POINTING_TARGET_SOURCE) {
+        case 1U:
+            return POINTING_TARGET_SUN;
+        case 2U:
+            return POINTING_TARGET_EARTH;
+        case 0U:
+        default:
+            return POINTING_TARGET_INERTIAL;
+    }
 }
 
 static void AppRuntime_CopyQuatSlot(imu_quat_slot_t *dst, bool enabled, const bno085_quat_t *src)
@@ -329,6 +345,7 @@ static void app_sensor_step(void)
 {
     uint32_t now_ms = HAL_GetTick();
     power_snapshot_t power_snapshot;
+    photodiode_sample_t photodiode_sample;
     float current_amps = 0.0f;
     float bus_voltage_volts = 0.0f;
     float temp_c = 0.0f;
@@ -338,6 +355,9 @@ static void app_sensor_step(void)
 
     CurrentSensor_RunAsyncSample();
     CurrentSensor_SubmitSampleRequest();
+
+    (void)Photodiode_ReadRaw(&photodiode_sample, now_ms);
+    PhotodiodeRuntime_ProcessSample(&photodiode_sample, NULL);
 
     if (g_temp_sensor_ready == 0U) {
         if ((uint32_t)(now_ms - g_last_temp_init_attempt_ms) >= SENSOR_INIT_RETRY_MS) {
@@ -541,6 +561,7 @@ static void app_sensor_console_step(void)
 {
     imu_snapshot_t snapshot;
     power_snapshot_t power;
+    photodiode_snapshot_t photo;
     uint32_t now_ms = HAL_GetTick();
     adcs_mode_t mode = OuterLoop_GetMode();
 
@@ -583,6 +604,20 @@ static void app_sensor_console_step(void)
         (int)power.digital_temp.temperature_cC,
         (unsigned int)power.digital_temp.status,
         (unsigned long)power.source_age_ms);
+
+    PhotodiodeRuntime_ReadSnapshot(&photo);
+    log_printf_dma(
+        "PHOTO seq=%lu valid=0x%02X used=0x%02X sat=0x%02X sun_valid=%u degraded=%u q=%.2f sun=(%.3f,%.3f,%.3f)",
+        (unsigned long)photo.publish_sequence,
+        (unsigned int)photo.valid_mask,
+        (unsigned int)photo.used_mask,
+        (unsigned int)photo.saturated_mask,
+        (unsigned int)photo.sun_valid,
+        (unsigned int)photo.degraded,
+        photo.quality,
+        photo.sun_body.x,
+        photo.sun_body.y,
+        photo.sun_body.z);
 }
 
 void AppRuntime_OnControlTickFromISR(void)
@@ -729,6 +764,7 @@ static void ADCSTask(void *argument)
 
     for (;;) {
         imu_snapshot_t snapshot;
+        photodiode_snapshot_t photo;
         imu_request_set_t control_request;
         mtq_state_t mtq_state;
         adcs_mode_t mode;
@@ -736,7 +772,9 @@ static void ADCSTask(void *argument)
 
         vTaskDelayUntil(&next_wake, pdMS_TO_TICKS(ADCS_PERIOD_MS));
 
+        (void)memset(&adcs_in, 0, sizeof(adcs_in));
         IMU_ReadSnapshot(&snapshot);
+        PhotodiodeRuntime_ReadSnapshot(&photo);
         (void)memset(&mtq_state, 0, sizeof(mtq_state));
         (void)InnerLoop_GetStateSnapshot(&mtq_state, 0U);
         mtq_firing = AppRuntime_IsMtqFiring(&mtq_state);
@@ -752,6 +790,20 @@ static void ADCSTask(void *argument)
         adcs_in.mag_field = AppRuntime_SelectMagneticFieldTesla(&snapshot, mtq_firing);
         adcs_in.gyro = AppRuntime_SelectGyro(&snapshot);
         adcs_in.orientation = AppRuntime_SelectOrientation(&snapshot, mode, mtq_firing);
+        adcs_in.pointing_target.source = g_pointing_target_source;
+        adcs_in.pointing_target.body_axis = (vec3_t){
+            ADCS_POINTING_BODY_AXIS_X,
+            ADCS_POINTING_BODY_AXIS_Y,
+            ADCS_POINTING_BODY_AXIS_Z
+        };
+        if (g_pointing_target_source == POINTING_TARGET_SUN) {
+            adcs_in.pointing_target.vector_valid = photo.sun_valid;
+            adcs_in.pointing_target.target_body = photo.sun_body;
+        } else if (g_pointing_target_source == POINTING_TARGET_EARTH) {
+            // Earth pointing needs a nadir/orbit or Earth-sensor vector source.
+            adcs_in.pointing_target.vector_valid = 0U;
+            adcs_in.pointing_target.target_body = (vec3_t){0.0f, 0.0f, 0.0f};
+        }
 
         OuterLoop_Update(&adcs_in, &adcs_out, dt_s);
         InnerLoop_SetTargetCurrent(adcs_out.dipole_request.x * MTQ_DIPOLE_TO_AMP,
@@ -773,12 +825,15 @@ void AppRuntime_Init(void)
     AppRuntime_BootPrint("BOOT InnerLoop_Init done");
     OuterLoop_Init();
     AppRuntime_BootPrint("BOOT OuterLoop_Init done");
+    g_pointing_target_source = AppRuntime_DefaultPointingTarget();
     ManualValidation_Init(&g_manual_validation);
     InnerLoop_SetTargetCurrent(0.0f, 0.0f, 0.0f);
     CurrentSensor_Init();
     CurrentSensor_SubmitSampleRequest();
+    Photodiode_Init();
 
     IMU_Init();
+    PhotodiodeRuntime_Init();
     Power_Init();
     IMU_RequestProfile(IMU_CLIENT_COMMS, IMU_PROFILE_TELEMETRY_BASIC);
     IMU_RequestProfile(IMU_CLIENT_CONTROL, IMU_PROFILE_CTRL_DETUMBLE);
